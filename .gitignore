@@ -1,0 +1,10 @@
+.venv/
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.xlsx
+*.xls

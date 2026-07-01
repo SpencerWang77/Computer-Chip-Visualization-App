@@ -1,12 +1,13 @@
 from PyQt5.QtWidgets import (QGraphicsScene, QGraphicsRectItem, QGraphicsTextItem,
-                             QGraphicsView, QWidget, QVBoxLayout, QLabel)
+                              QGraphicsView, QWidget, QVBoxLayout, QLabel, QLineEdit,
+                              QPushButton, QHBoxLayout, QGraphicsLineItem)
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QPen, QBrush, QColor, QFont, QPainter
 from models import Pad, ChipLayout
 
 
 class PadGraphicsItem(QGraphicsRectItem):
-    def __init__(self, pad: Pad, x: float, y: float, width: float, height: float):
+    def __init__(self, pad: Pad, x: float, y: float, width: float, height: float, fill_color=None):
         super().__init__(x, y, width, height)
         self.pad = pad
         self.setFlag(QGraphicsRectItem.ItemIsSelectable)
@@ -14,10 +15,15 @@ class PadGraphicsItem(QGraphicsRectItem):
         # 禁用悬停效果
         self.setAcceptHoverEvents(False)
         
-        # 深蓝色背景，加粗边框
+        # 使用指定的填充颜色，如果没有提供则使用默认
+        if fill_color is None:
+            fill_color = QColor(52, 152, 219, 200)
+        
+        # 设置边框和填充颜色
         pen = QPen(QColor(41, 128, 185), 3)
         self.setPen(pen)
-        self.setBrush(QBrush(QColor(52, 152, 219, 200)))
+        self.setBrush(QBrush(fill_color))
+        self._original_brush = QBrush(fill_color)  # 保存原始颜色
         
         # 获取pad编号
         self._pad_number = self._get_pad_id_text()
@@ -100,11 +106,11 @@ class PadGraphicsItem(QGraphicsRectItem):
     def itemChange(self, change, value):
         if change == QGraphicsRectItem.ItemSelectedChange:
             if value:
-                # 被选中时改变颜色
-                self.setBrush(QBrush(QColor(241, 196, 15, 200)))
+                # 被选中时只改变边框颜色，不改填充颜色
+                self.setPen(QPen(QColor(241, 196, 15), 5))  # 橙色加粗边框
             else:
-                # 取消选中时恢复原色
-                self.setBrush(QBrush(QColor(52, 152, 219, 200)))
+                # 取消选中时恢复原始边框
+                self.setPen(QPen(QColor(41, 128, 185), 3))  # 恢复深蓝色边框
         return super().itemChange(change, value)
     
     def mousePressEvent(self, event):
@@ -123,17 +129,7 @@ class PadGraphicsItem(QGraphicsRectItem):
         
         super().mousePressEvent(event)
     
-    def hoverEnterEvent(self, event):
-        self.setBrush(QBrush(QColor(39, 174, 96, 120)))
-        super().hoverEnterEvent(event)
-    
-    def hoverLeaveEvent(self, event):
-        self.setBrush(QBrush(QColor(52, 152, 219, 80)))
-        super().hoverLeaveEvent(event)
-    
-    def mousePressEvent(self, event):
-        self.setSelected(True)
-        super().mousePressEvent(event)
+
 
 
 class ChipScene(QGraphicsScene):
@@ -143,14 +139,81 @@ class ChipScene(QGraphicsScene):
         super().__init__(parent)
         self.pad_items = {}
         self.chip_layout = ChipLayout()
+        self._lf_color_map = {}  # 存储LF到颜色的映射
     
-    def set_pads(self, pads):
+    def _get_pad_fill_color(self, pad: Pad) -> QColor:
+        """根据bonding关系获取pad的填充颜色"""
+        bonding = pad.bonding if hasattr(pad, 'bonding') else ""
+        bonding_upper = bonding.upper()
+        
+        # 规则1: Not Bond -> 黑色
+        if bonding_upper == "NOT_BOND" or bonding_upper == "NOT BOND" or bonding_upper == "":
+            return QColor(33, 33, 33, 200)  # 黑色
+        
+        # 规则2: E-pad或VSS_ring -> 深蓝色
+        if "E_PAD" in bonding_upper or "E-PAD" in bonding_upper or "E PAD" in bonding_upper:
+            return QColor(41, 128, 185, 200)  # 深蓝色
+        if "VSS_RING" in bonding_upper or "VSS_RING" in bonding_upper or "VSS RING" in bonding_upper:
+            return QColor(41, 128, 185, 200)  # 深蓝色
+        
+        # 规则3: LF -> 浅色，相同LF使用相同颜色
+        if "LF" in bonding_upper:
+            # 提取LF的唯一标识符
+            lf_key = self._extract_lf_key(bonding_upper)
+            if lf_key not in self._lf_color_map:
+                # 分配一个新的浅色
+                self._lf_color_map[lf_key] = self._get_next_lf_color()
+            return self._lf_color_map[lf_key]
+        
+        # 规则4: SOC, PSRAM, DDRA, DDRB, ROM -> 深灰色
+        if bonding_upper in ["SOC", "PSRAM", "DDRA", "DDRB", "ROM"] or "ROM" in bonding_upper or "DDRA" in bonding_upper or "DDRB" in bonding_upper:
+            return QColor(80, 80, 80, 200)  # 深灰色
+        
+        # 规则5: 未定义或无法分类 -> 深红色
+        return QColor(192, 57, 43, 200)  # 深红色
+    
+    def _extract_lf_key(self, bonding_upper: str) -> str:
+        """从bonding字符串中提取LF的唯一标识符"""
+        # 查找LF及其相关标识
+        import re
+        # 匹配LF后面跟着数字或字母的模式（包括LF.10格式）
+        match = re.search(r'LF[._\s]*([A-Z0-9]+)', bonding_upper)
+        if match:
+            lf_num = match.group(1)
+            return f"LF_{lf_num}"
+        return "LF_DEFAULT"
+    
+    def _get_next_lf_color(self) -> QColor:
+        """获取下一个LF用的浅色（只用2-3种，确保不接近白色）"""
+        lf_colors = [
+            (150, 205, 150, 200),  # 中等绿色 - 避免太亮
+            (135, 206, 250, 200),  # 中等蓝色 - 避免太亮
+            (250, 160, 122, 200),  # 珊瑚色 - 适当的对比度
+        ]
+        used_colors = list(self._lf_color_map.values())
+        
+        # 循环使用3种颜色
+        used_count = len(self._lf_color_map)
+        color_index = used_count % len(lf_colors)
+        return QColor(*lf_colors[color_index])
+    
+    def set_pads(self, pads, frame_params=None):
         self.clear()
         self.chip_layout.set_pads(pads)
+        self._lf_color_map = {}  # 清空LF颜色映射
         
         coords_info = self.chip_layout.get_expanded_coordinates()
-        self.setSceneRect(coords_info['min_x'], coords_info['min_y'], 
-                         coords_info['width'], coords_info['height'])
+        
+        # 先绘制框架（如果有参数的话）
+        if frame_params and frame_params.get('die_width') and frame_params.get('die_height') and frame_params.get('lf_count'):
+            frame_coords = self._draw_frame_board(frame_params)
+            # 使用框架的坐标范围来设置场景矩形
+            self.setSceneRect(frame_coords['min_x'] - 100, frame_coords['min_y'] - 100, 
+                             frame_coords['width'] + 200, frame_coords['height'] + 200)
+        else:
+            # 如果没有框架，使用原来的die坐标
+            self.setSceneRect(coords_info['min_x'], coords_info['min_y'], 
+                             coords_info['width'], coords_info['height'])
         
         self._draw_chip_board()
         self._draw_pads()
@@ -167,6 +230,148 @@ class ChipScene(QGraphicsScene):
         chip_rect.setBrush(QBrush(QColor(236, 240, 241, 255)))
         self.addItem(chip_rect)
     
+    def _draw_frame_board(self, frame_params):
+        """绘制框架板（Leadframe）"""
+        die_width = frame_params['die_width']
+        die_height = frame_params['die_height']
+        lf_count = frame_params['lf_count']
+        
+        # 计算框架尺寸（框架比die大一圈，留出引脚空间）
+        frame_margin = 180  # 引言和框架边距，单位μm（更接近die）
+        boarder_thickness = 100  # 框架厚度
+        pin_length = 60  # 引脚长度（用于计算外边界）
+        
+        # 计算框架板的总尺寸
+        frame_width = die_width + 2 * frame_margin + 2 * boarder_thickness
+        frame_height = die_height + 2 * frame_margin + 2 * boarder_thickness
+        
+        # 获取当前的中心位置
+        coords_info = self.chip_layout.get_expanded_coordinates()
+        center_x = coords_info['min_x'] + coords_info['width'] / 2
+        center_y = coords_info['min_y'] + coords_info['height'] / 2
+        
+        # 计算框架板的左上角位置
+        frame_min_x = center_x - frame_width / 2
+        frame_min_y = center_y - frame_height / 2
+        
+        # 绘制外框架（矩形边框）
+        frame_rect = QGraphicsRectItem(
+            frame_min_x, frame_min_y, frame_width, frame_height
+        )
+        frame_rect.setPen(QPen(QColor(52, 73, 94, 255), boarder_thickness))  # 深灰色边框
+        frame_rect.setBrush(QBrush(Qt.NoBrush))  # 不填充，只显示边框
+        self.addItem(frame_rect)
+        
+        # 计算引脚位置
+        if lf_count >= 4:
+            # 计算每边的LF数量（4边平分）
+            lf_per_side = lf_count // 4
+            
+            # 绘制引脚标记
+            self._draw_leadframe_pins(
+                frame_min_x, frame_min_y, frame_width, frame_height, 
+                frame_margin, boarder_thickness, lf_per_side
+            )
+        
+        # 返回框架的完整坐标范围（包括引脚）
+        return {
+            'min_x': frame_min_x - pin_length,
+            'min_y': frame_min_y - pin_length,
+            'width': frame_width + 2 * pin_length,
+            'height': frame_height + 2 * pin_length
+        }
+    
+    def _draw_leadframe_pins(self, frame_min_x, frame_min_y, frame_width, frame_height, 
+                            frame_margin, boarder_thickness, lf_per_side):
+        """绘制Leadframe引脚标记"""
+        from PyQt5.QtWidgets import QGraphicsLineItem, QGraphicsEllipseItem
+        
+        # 引脚绘制参数
+        pin_length = 60  # 引脚长度
+        pin_width = 30   # 引脚厚度
+        pin_edge_offset = frame_margin + boarder_thickness / 2  # 引脚边缘偏移
+        
+        # 引脚编号计数器
+        pin_counter = 1
+        
+        # 绘制四边的引脚（按照要求的顺序：左、下、右、上）
+        # 左边：从上往下
+        if lf_per_side > 0:
+            effective_height = frame_height - 2 * pin_edge_offset
+            spacing = effective_height / (lf_per_side + 1)
+            
+            for i in range(1, lf_per_side + 1):
+                pin_y = frame_min_y + pin_edge_offset + i * spacing
+                
+                pin = QGraphicsLineItem(frame_min_x - pin_length, pin_y, frame_min_x, pin_y)
+                pen = QPen(QColor(70, 80, 90, 200), pin_width)
+                pen.setCapStyle(Qt.RoundCap)
+                pin.setPen(pen)
+                self.addItem(pin)
+                
+                self._draw_lf_label(frame_min_x - pin_length - 50, pin_y - 10, pin_counter)
+                pin_counter += 1
+        
+        # 下边：从左往右
+        if lf_per_side > 0:
+            effective_width = frame_width - 2 * pin_edge_offset
+            spacing = effective_width / (lf_per_side + 1)
+            
+            for i in range(1, lf_per_side + 1):
+                pin_x = frame_min_x + pin_edge_offset + i * spacing
+                
+                pin = QGraphicsLineItem(pin_x, frame_min_y + frame_height, pin_x, frame_min_y + frame_height + pin_length)
+                pen = QPen(QColor(70, 80, 90, 200), pin_width)
+                pen.setCapStyle(Qt.RoundCap)
+                pin.setPen(pen)
+                self.addItem(pin)
+                
+                self._draw_lf_label(pin_x - 15, frame_min_y + frame_height + pin_length + 5, pin_counter)
+                pin_counter += 1
+        
+        # 右边：从下往上
+        if lf_per_side > 0:
+            effective_height = frame_height - 2 * pin_edge_offset
+            spacing = effective_height / (lf_per_side + 1)
+            
+            for i in range(lf_per_side, 0, -1):
+                pin_y = frame_min_y + pin_edge_offset + i * spacing
+                
+                pin = QGraphicsLineItem(frame_min_x + frame_width, pin_y, frame_min_x + frame_width + pin_length, pin_y)
+                pen = QPen(QColor(70, 80, 90, 200), pin_width)
+                pen.setCapStyle(Qt.RoundCap)
+                pin.setPen(pen)
+                self.addItem(pin)
+                
+                self._draw_lf_label(frame_min_x + frame_width + pin_length + 10, pin_y - 10, pin_counter)
+                pin_counter += 1
+        
+        # 上边：从右往左
+        if lf_per_side > 0:
+            effective_width = frame_width - 2 * pin_edge_offset
+            spacing = effective_width / (lf_per_side + 1)
+            
+            for i in range(lf_per_side, 0, -1):
+                pin_x = frame_min_x + pin_edge_offset + i * spacing
+                
+                pin = QGraphicsLineItem(pin_x, frame_min_y - pin_length, pin_x, frame_min_y)
+                pen = QPen(QColor(70, 80, 90, 200), pin_width)
+                pen.setCapStyle(Qt.RoundCap)
+                pin.setPen(pen)
+                self.addItem(pin)
+                
+                self._draw_lf_label(pin_x - 15, frame_min_y - pin_length - 25, pin_counter)
+                pin_counter += 1
+    
+    def _draw_lf_label(self, x: float, y: float, number: int):
+        """绘制LF标签（LF.1, LF.2等格式）"""
+        text = QGraphicsTextItem(f"LF.{number}")
+        font = QFont("Arial", 14, QFont.Bold)  # 从8放大到14
+        text.setFont(font)
+        text.setDefaultTextColor(QColor(70, 80, 90, 200))
+        text.setPos(x, y)
+        self.addItem(text)
+    
     def _draw_pads(self):
         coords_info = self.chip_layout.get_expanded_coordinates()
         pads = self.chip_layout.pads
@@ -179,7 +384,10 @@ class ChipScene(QGraphicsScene):
                 width = x2 - x1
                 height = y2 - y1
                 
-                pad_item = PadGraphicsItem(pad, x1, y1, width, height)
+                # 根据bonding关系获取填充颜色
+                fill_color = self._get_pad_fill_color(pad)
+                
+                pad_item = PadGraphicsItem(pad, x1, y1, width, height, fill_color)
                 self.addItem(pad_item)
                 
                 # 单独添加文本项到场景
@@ -283,3 +491,15 @@ class ChipVisualizationView(QGraphicsView):
             zoom_factor = zoom_out_factor
         
         self.scale(zoom_factor, zoom_factor)
+    
+    def fit_in_view(self):
+        """自动缩放到整个场景范围"""
+        if self.scene():
+            # 获取场景矩形
+            scene_rect = self.scene().sceneRect()
+            if not scene_rect.isNull():
+                # 添加一些边距
+                margin = 20
+                fitted_rect = scene_rect.adjusted(-margin, -margin, margin, margin)
+                # 适应视图
+                self.fitInView(fitted_rect, Qt.KeepAspectRatio)

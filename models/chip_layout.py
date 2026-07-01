@@ -22,18 +22,18 @@ class ChipLayout:
             return
         
         for pad in self.pads:
-            if not pad.is_marked_for_deletion:
-                center_x = pad.x_coord
-                center_y = pad.y_coord
-                width = pad.x_open
-                height = pad.y_open
-                
-                x1 = center_x - width / 2
-                y1 = center_y - height / 2
-                x2 = center_x + width / 2
-                y2 = center_y + height / 2
-                
-                self.pad_rectangles[pad.pad_id] = (x1, y1, x2, y2)
+            # 计算所有pad的矩形，不管是否标记删除
+            center_x = pad.x_coord
+            center_y = pad.y_coord
+            width = pad.x_open
+            height = pad.y_open
+            
+            x1 = center_x - width / 2
+            y1 = center_y - height / 2
+            x2 = center_x + width / 2
+            y2 = center_y + height / 2
+            
+            self.pad_rectangles[pad.pad_id] = (x1, y1, x2, y2)
     
     def _remove_deleted_pads(self):
         """移除标记为删除的pad"""

@@ -1,11 +1,11 @@
 import sys
 import os
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                              QLabel, QFileDialog, QSpacerItem, QSizePolicy, QPushButton)
+                              QHBoxLayout, QLabel, QFileDialog, QSpacerItem, QSizePolicy, QPushButton)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPalette, QColor, QFont
 from ui import UploadSection, FormatDescription, ProgressControl, VisualizationWindow
-from data_handlers import ExcelHandler
+from data_handlers import ExcelHandler, ExcelExporter
 
 
 class ChipVisApp(QMainWindow):
@@ -20,6 +20,7 @@ class ChipVisApp(QMainWindow):
     def init_ui(self):
         self.setWindowTitle("芯片连线可视化")
         self.setGeometry(100, 100, 800, 600)
+        self.showMaximized()  # 默认全屏显示
         
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -35,9 +36,9 @@ class ChipVisApp(QMainWindow):
         title_label.setStyleSheet("color: #2c3e50; margin-bottom: 20px;")
         main_layout.addWidget(title_label)
         
-        upload_section = UploadSection()
-        upload_section.get_upload_button().clicked.connect(self.open_file_dialog)
-        main_layout.addWidget(upload_section)
+        self.upload_section = UploadSection()
+        self.upload_section.get_upload_button().clicked.connect(self.open_file_dialog)
+        main_layout.addWidget(self.upload_section)
         
         format_description = FormatDescription()
         main_layout.addWidget(format_description)
@@ -92,33 +93,55 @@ class ChipVisApp(QMainWindow):
                 self.progress_control.status_label.setText("文件读取失败，请重新选择")
     
     def start_visualization(self):
-        print("=== start_visualization called ===")
-        
-        # 检查按钮状态
-        if hasattr(self, 'start_button'):
-            print(f"Button enabled: {self.start_button.isEnabled()}")
-            print(f"Button visible: {self.start_button.isVisible()}")
-        else:
-            print("Start button reference not found")
-        
-        # 检查当前文件
         if self.current_file:
-            print(f"Current file: {self.current_file}")
-        else:
-            print("ERROR: No current file set")
-            return
-        
-        # 检查Excel handler
-        if not hasattr(self.excel_handler, 'get_pads'):
-            print("ERROR: Excel handler has no get_pads method")
-            return
+            print("=== start_visualization called ===")
             
-        # 获取pads
-        pads = self.excel_handler.get_pads()
-        print(f"Got {len(pads)} from handler")
-        
-        if not pads:
-            print("ERROR: No pads available for visualization")
+            # 检查按钮状态
+            if hasattr(self, 'start_button'):
+                print(f"Button enabled: {self.start_button.isEnabled()}")
+                print(f"Button visible: {self.start_button.isVisible()}")
+            
+            # 检查当前文件
+            if self.current_file:
+                print(f"Current file: {self.current_file}")
+            else:
+                print("ERROR: No current file set")
+                return
+            
+            # 检查Excel handler
+            if not hasattr(self.excel_handler, 'get_pads'):
+                print("ERROR: Excel handler has no get_pads method")
+                return
+                
+            # 获取pads
+            pads = self.excel_handler.get_pads()
+            print(f"Got {len(pads)} from handler")
+            
+            # 获取框架参数
+            frame_params = self.upload_section.get_frame_parameters()
+            print(f"Frame parameters: {frame_params}")
+            
+            if pads:
+                # 启动增强版编辑器
+                from chip_editor_app import ChipEditorApp
+                enhanced_viz = ChipEditorApp()
+                enhanced_viz.pads = pads  # 直接设置pads
+                
+                # 设置场景并传递框架参数
+                enhanced_viz.scene.set_pads(pads, frame_params)  # 传递框架参数
+                
+                enhanced_viz.export_btn.setEnabled(True)
+                enhanced_viz.status_label.setText(f"已加载 {len(pads)} 个Pad | 点击Pad进行编辑，可修改: Pad名称、网络名称、焊接关系")
+                enhanced_viz.show()
+                enhanced_viz.showMaximized()  # 默认全屏显示
+                
+                # 自动缩放到整个LF框架区域
+                if frame_params:
+                    enhanced_viz.view.fit_in_view()
+                
+                print("Enhanced visualization started")
+            else:
+                print("No pads available for visualization")
             return
             
         # 检查pads内容
@@ -172,6 +195,7 @@ def main():
     
     window = ChipVisApp()
     window.show()
+    window.showMaximized()
     sys.exit(app.exec_())
 
 

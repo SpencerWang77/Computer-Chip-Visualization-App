@@ -1,12 +1,12 @@
-from PyQt5.QtWidgets import QGroupBox, QVBoxLayout, QLabel
 from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QGroupBox, QLabel, QVBoxLayout
 
 
 class FormatDescription(QGroupBox):
     def __init__(self, parent=None):
-        super().__init__("文件格式说明", parent)
+        super().__init__("File Format", parent)
         self.init_ui()
-    
+
     def init_ui(self):
         self.setStyleSheet("""
             QGroupBox {
@@ -25,22 +25,24 @@ class FormatDescription(QGroupBox):
                 background: white;
             }
         """)
-        
-        layout = QVBoxLayout(self)
-        
-        format_text = QLabel("""
-支持的文件格式：
-• Excel 文件 (.xlsx, .xls)
-• 必须包含以下工作表：
-  - connect: Pad连接信息 (Die Pad No, Pad name, X-coord, Y-coord, X open, Y open, Net Name, Bonding)
-  - ring: Ring配置信息
-  - ref-fig: 参考图表信息
 
-数据格式要求：
-• 第一行为字段标题
-• 第二行为单位说明或备注
-• 第三行开始为实际数据
-• 坐标数据为数值型
+        layout = QVBoxLayout(self)
+
+        format_text = QLabel("""
+Supported file format:
+• Excel file (.xlsx, .xls) with a worksheet named "connect"
+• Columns: Die Pad No, Pad name, X-coord, Y-coord, X open, Y open, Net Name, Bonding
+
+Data layout:
+• Row 1: column headers
+• Row 2: units / remarks
+• Row 3 onward: pad data (coordinates in µm, numeric)
+
+Bonding column values:
+• LF.<n> — wire bonded to lead frame pin n
+• VSS_ring — wire bonded to the VSS ring (E-PAD ring)
+• Not Bond — no wire
+• SOC.<n> / PSRAM.<n> / DDRA.<n> / DDRB.<n> / ROM.<n> — die-to-die bond
         """)
         format_text.setStyleSheet("color: #34495e; font-size: 11px; line-height: 1.6;")
         format_text.setAlignment(Qt.AlignLeft)

@@ -1,23 +1,21 @@
-from PyQt5.QtWidgets import (QGroupBox, QVBoxLayout, QLabel, 
-                              QPushButton, QSpacerItem, QSizePolicy, 
-                              QLineEdit, QHBoxLayout, QFormLayout)
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QIntValidator, QDoubleValidator
+from PyQt5.QtGui import QDoubleValidator, QIntValidator
+from PyQt5.QtWidgets import (QFormLayout, QGroupBox, QLabel, QLineEdit,
+                             QPushButton, QVBoxLayout)
 
 
 class UploadSection(QGroupBox):
+    """File picker plus die/lead-frame parameters."""
+
     def __init__(self, parent=None):
-        super().__init__("导入数据", parent)
+        super().__init__("Import Data", parent)
         self.file_label = None
         self.upload_btn = None
-        
-        # 框架参数
         self.die_width_input = None
         self.die_height_input = None
-        self.lf_count_input = None
-        
+        self.pin_count_input = None
         self.init_ui()
-    
+
     def init_ui(self):
         self.setStyleSheet("""
             QGroupBox {
@@ -36,10 +34,10 @@ class UploadSection(QGroupBox):
                 background: white;
             }
         """)
-        
+
         layout = QVBoxLayout(self)
-        
-        self.file_label = QLabel("未选择文件")
+
+        self.file_label = QLabel("No file selected")
         self.file_label.setAlignment(Qt.AlignCenter)
         self.file_label.setStyleSheet("""
             QLabel {
@@ -52,8 +50,8 @@ class UploadSection(QGroupBox):
             }
         """)
         layout.addWidget(self.file_label)
-        
-        self.upload_btn = QPushButton("选择 Excel 文件")
+
+        self.upload_btn = QPushButton("Select Excel File")
         self.upload_btn.setCursor(Qt.PointingHandCursor)
         self.upload_btn.setStyleSheet("""
             QPushButton {
@@ -74,12 +72,11 @@ class UploadSection(QGroupBox):
             }
         """)
         layout.addWidget(self.upload_btn)
-        
-        # 框架设置区域
+
         self._add_frame_settings(layout)
-    
+
     def set_file_selected(self, file_name: str):
-        self.file_label.setText("已选择: " + file_name)
+        self.file_label.setText("Selected: " + file_name)
         self.file_label.setStyleSheet("""
             QLabel {
                 background-color: #d5f4e6;
@@ -91,14 +88,12 @@ class UploadSection(QGroupBox):
                 font-weight: bold;
             }
         """)
-    
+
     def get_upload_button(self):
         return self.upload_btn
-    
+
     def _add_frame_settings(self, parent_layout):
-        """添加框架设置输入区域"""
-        # 框架设置标题
-        frame_title = QLabel("框架设置")
+        frame_title = QLabel("Package Settings")
         frame_title.setAlignment(Qt.AlignCenter)
         frame_title.setStyleSheet("""
             QLabel {
@@ -113,18 +108,12 @@ class UploadSection(QGroupBox):
             }
         """)
         parent_layout.addWidget(frame_title)
-        
-        # 创建表单布局
+
         form_layout = QFormLayout()
         form_layout.setSpacing(10)
         form_layout.setContentsMargins(10, 10, 10, 10)
-        
-        # Die宽度输入
-        self.die_width_input = QLineEdit()
-        self.die_width_input.setPlaceholderText("例如: 5000")
-        self.die_width_input.setText("3475.8")  # 默认值
-        self.die_width_input.setValidator(QDoubleValidator(0.1, 100000.0, 2))
-        self.die_width_input.setStyleSheet("""
+
+        input_style = """
             QLineEdit {
                 border: 1px solid #bdc3c7;
                 border-radius: 4px;
@@ -135,28 +124,31 @@ class UploadSection(QGroupBox):
             QLineEdit:focus {
                 border: 2px solid #3498db;
             }
-        """)
-        form_layout.addRow("Die 宽度 (μm):", self.die_width_input)
-        
-        # Die高度输入
+        """
+
+        self.die_width_input = QLineEdit()
+        self.die_width_input.setPlaceholderText("e.g. 5000")
+        self.die_width_input.setText("3475.8")
+        self.die_width_input.setValidator(QDoubleValidator(0.1, 100000.0, 2))
+        self.die_width_input.setStyleSheet(input_style)
+        form_layout.addRow("Die width (µm):", self.die_width_input)
+
         self.die_height_input = QLineEdit()
-        self.die_height_input.setPlaceholderText("例如: 5000")
-        self.die_height_input.setText("3105")  # 默认值
+        self.die_height_input.setPlaceholderText("e.g. 5000")
+        self.die_height_input.setText("3105")
         self.die_height_input.setValidator(QDoubleValidator(0.1, 100000.0, 2))
-        self.die_height_input.setStyleSheet(self.die_width_input.styleSheet())
-        form_layout.addRow("Die 高度 (μm):", self.die_height_input)
-        
-        # Pin Count输入
-        self.lf_count_input = QLineEdit()
-        self.lf_count_input.setPlaceholderText("例如: 16")
-        self.lf_count_input.setText("130")  # 默认值
-        self.lf_count_input.setValidator(QIntValidator(4, 1000))
-        self.lf_count_input.setStyleSheet(self.die_width_input.styleSheet())
-        form_layout.addRow("Pin Count:", self.lf_count_input)
-        
-        # 提示标签
-        info_label = QLabel("* Pin Count ÷ 4 = 每边引脚数")
-        info_label.setAlignment(Qt.AlignCenter)
+        self.die_height_input.setStyleSheet(input_style)
+        form_layout.addRow("Die height (µm):", self.die_height_input)
+
+        self.pin_count_input = QLineEdit()
+        self.pin_count_input.setPlaceholderText("auto-detected from the file")
+        self.pin_count_input.setValidator(QIntValidator(4, 1000))
+        self.pin_count_input.setStyleSheet(input_style)
+        form_layout.addRow("Lead frame pin count:", self.pin_count_input)
+
+        info_label = QLabel("* Pin count is auto-filled from the highest LF.<n>\n"
+                            "  in the file (rounded up to a multiple of 4);\n"
+                            "  you can override it before visualizing.")
         info_label.setStyleSheet("""
             QLabel {
                 color: #7f8c8d;
@@ -166,20 +158,23 @@ class UploadSection(QGroupBox):
             }
         """)
         form_layout.addRow("", info_label)
-        
+
         parent_layout.addLayout(form_layout)
-    
+
+    def set_pin_count(self, pin_count: int):
+        """Pre-fill the pin count (auto-detected from the loaded file)."""
+        if pin_count > 0:
+            self.pin_count_input.setText(str(pin_count))
+
     def get_frame_parameters(self):
-        """获取框架参数"""
         try:
             die_width = float(self.die_width_input.text()) if self.die_width_input.text() else None
             die_height = float(self.die_height_input.text()) if self.die_height_input.text() else None
-            pin_count = int(self.lf_count_input.text()) if self.lf_count_input.text() else None
-            
+            pin_count = int(self.pin_count_input.text()) if self.pin_count_input.text() else None
             return {
                 'die_width': die_width,
                 'die_height': die_height,
-                'lf_count': pin_count  # 保持内部变量名兼容性
+                'pin_count': pin_count,
             }
         except ValueError:
             return None

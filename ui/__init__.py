@@ -1,9 +1,9 @@
-from .upload_section import UploadSection
+from .chip_visualization import ChipScene, ChipVisualizationView
+from .editor_window import EditorWindow
 from .format_description import FormatDescription
+from .pad_editor import PadEditor
 from .progress_control import ProgressControl
-from .chip_visualization import ChipScene, ChipVisualizationView, PadInfoPanel
-from .visualization_window import VisualizationWindow
-from PyQt5.QtWidgets import QProgressBar
+from .upload_section import UploadSection
 
-__all__ = ['UploadSection', 'FormatDescription', 'ProgressControl', 
-           'ChipScene', 'ChipVisualizationView', 'PadInfoPanel', 'VisualizationWindow', 'QProgressBar']
+__all__ = ['ChipScene', 'ChipVisualizationView', 'EditorWindow',
+           'FormatDescription', 'PadEditor', 'ProgressControl', 'UploadSection']

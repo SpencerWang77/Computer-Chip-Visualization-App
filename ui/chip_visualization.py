@@ -1,505 +1,539 @@
-from PyQt5.QtWidgets import (QGraphicsScene, QGraphicsRectItem, QGraphicsTextItem,
-                              QGraphicsView, QWidget, QVBoxLayout, QLabel, QLineEdit,
-                              QPushButton, QHBoxLayout, QGraphicsLineItem)
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QPen, QBrush, QColor, QFont, QPainter
-from models import Pad, ChipLayout
+"""Graphics scene/view for the chip bonding diagram.
+
+Draws, from the inside out:
+  1. The die with its pads (colored by bonding target).
+  2. The VSS ring (E-PAD ring) surrounding the die.
+  3. The individual lead frame pins around the outside (LF.1 ... LF.n,
+     numbered counterclockwise starting at the bottom-left corner, the
+     convention used by the bonding data).
+  4. Optional bond wires from each pad to its LF pin or to the VSS ring.
+
+Coordinates in the Excel file are die coordinates in micrometres with the
+origin at the bottom-left and Y increasing upward. Qt's Y axis points down,
+so every die coordinate is flipped (scene_y = -die_y) when drawn.
+"""
+
+import re
+
+from PyQt5.QtCore import QEvent, QPointF, QRectF, Qt, pyqtSignal
+from PyQt5.QtGui import (QBrush, QColor, QFont, QNativeGestureEvent, QPainter,
+                         QPainterPath, QPen)
+from PyQt5.QtWidgets import (QGraphicsLineItem, QGraphicsPathItem,
+                             QGraphicsRectItem, QGraphicsScene,
+                             QGraphicsTextItem, QGraphicsView)
+
+from models import ChipLayout, Pad
+
+_LF_PATTERN = re.compile(r'^LF[._\s]*(\d+)$', re.IGNORECASE)
+_DIE_PREFIXES = ('SOC.', 'PSRAM.', 'DDRA.', 'DDRB.', 'ROM.')
+
+# Pad/pin fill colors
+COLOR_NOT_BOND = QColor(33, 33, 33, 220)        # black
+COLOR_VSS = QColor(41, 128, 185, 220)           # dark blue
+COLOR_DIE_TO_DIE = QColor(80, 80, 80, 220)      # dark gray
+COLOR_UNDEFINED = QColor(192, 57, 43, 220)      # dark red
+COLOR_PIN_UNUSED = QColor(189, 195, 199, 180)   # light gray
+
+# Palette for LF pin groups; a pin keeps the same color as the pads bonded
+# to it (keyed by pin number, so LF.5 is always the same color).
+LF_PALETTE = [
+    QColor(46, 204, 113, 220),   # green
+    QColor(52, 152, 219, 220),   # blue
+    QColor(230, 126, 34, 220),   # orange
+    QColor(155, 89, 182, 220),   # purple
+    QColor(241, 196, 15, 220),   # yellow
+    QColor(26, 188, 156, 220),   # teal
+]
+
+
+def classify_bonding(bonding: str):
+    """Return (kind, detail) where kind is one of
+    'not_bond' | 'vss_ring' | 'lf' | 'die' | 'unknown'.
+    For 'lf', detail is the pin number (int)."""
+    value = (bonding or "").strip()
+    upper = value.upper()
+
+    if upper in ("", "NOT BOND", "NOT_BOND"):
+        return 'not_bond', None
+
+    if "VSS" in upper and "RING" in upper:
+        return 'vss_ring', None
+    if "E-PAD" in upper or "E_PAD" in upper or "EPAD" in upper:
+        return 'vss_ring', None
+
+    match = _LF_PATTERN.match(value)
+    if match:
+        return 'lf', int(match.group(1))
+
+    if upper.startswith(tuple(p.upper() for p in _DIE_PREFIXES)):
+        return 'die', None
+
+    return 'unknown', None
+
+
+def lf_color(pin_number: int) -> QColor:
+    return LF_PALETTE[pin_number % len(LF_PALETTE)]
+
+
+def bonding_color(bonding: str) -> QColor:
+    kind, detail = classify_bonding(bonding)
+    if kind == 'not_bond':
+        return COLOR_NOT_BOND
+    if kind == 'vss_ring':
+        return COLOR_VSS
+    if kind == 'lf':
+        return lf_color(detail)
+    if kind == 'die':
+        return COLOR_DIE_TO_DIE
+    return COLOR_UNDEFINED
 
 
 class PadGraphicsItem(QGraphicsRectItem):
-    def __init__(self, pad: Pad, x: float, y: float, width: float, height: float, fill_color=None):
-        super().__init__(x, y, width, height)
+    """A pad rectangle with its number centered inside."""
+
+    def __init__(self, pad: Pad, rect: QRectF, fill_color: QColor):
+        super().__init__(rect)
         self.pad = pad
         self.setFlag(QGraphicsRectItem.ItemIsSelectable)
-        
-        # 禁用悬停效果
         self.setAcceptHoverEvents(False)
-        
-        # 使用指定的填充颜色，如果没有提供则使用默认
-        if fill_color is None:
-            fill_color = QColor(52, 152, 219, 200)
-        
-        # 设置边框和填充颜色
-        pen = QPen(QColor(41, 128, 185), 3)
-        self.setPen(pen)
+        self.setZValue(10)
+
+        self.setPen(QPen(QColor(41, 128, 185), 3))
         self.setBrush(QBrush(fill_color))
-        self._original_brush = QBrush(fill_color)  # 保存原始颜色
-        
-        # 获取pad编号
-        self._pad_number = self._get_pad_id_text()
-        
-        # 根据数字位数和pad尺寸动态计算字体大小
-        num_digits = len(self._pad_number)
-        
-        # 基础字体大小计算
-        min_dim = min(width, height)
-        
-        # 根据位数调整字体大小 - 更精确的控制
-        if num_digits == 1:
-            font_size = min_dim / 1.8  # 单位数：最大字体，留适当余量
-        elif num_digits == 2:
-            font_size = min_dim / 2.5  # 两位数：适当缩小
-        else:  # 3位及以上
-            font_size = min_dim / 3.5  # 多位数：大幅缩小，确保能完全放下
-        
-        font_size = max(12, int(font_size))  # 最小12像素字体
-        
-        # 创建文本项 - 不作为子项，直接添加到场景
-        self.text_item = QGraphicsTextItem(str(self._pad_number))
-        font = QFont("Arial", font_size, QFont.Bold)
-        self.text_item.setFont(font)
-        self.text_item.setDefaultTextColor(QColor(255, 255, 255))
-        self.text_item.setZValue(100)  # 确保文本在最上层
-        self.text_item.setVisible(True)
-        self.text_item.setOpacity(1.0)
-        
-        # 获取文本尺寸
-        text_rect = self.text_item.boundingRect()
-        
-        # 自适应调整：如果文本超出边界，进一步缩小字体
-        max_attempts = 3
-        for attempt in range(max_attempts):
-            text_rect = self.text_item.boundingRect()
-            
-            # 检查文本是否超出矩形边界
-            if (text_rect.width() > width * 0.9 or 
-                text_rect.height() > height * 0.9):
-                # 减小字体尺寸
-                current_font = self.text_item.font()
-                new_size = max(8, int(current_font.pointSize() * 0.8))
-                current_font.setPointSize(new_size)
-                self.text_item.setFont(current_font)
-            else:
+
+        self.text_item = self._make_label(rect)
+
+    def _make_label(self, rect: QRectF) -> QGraphicsTextItem:
+        label = self.pad.pad_id.split('.')[-1]
+        min_dim = min(rect.width(), rect.height())
+        # Longer numbers get a smaller starting font.
+        divisor = {1: 1.8, 2: 2.5}.get(len(label), 3.5)
+        font_size = max(6.0, min_dim / divisor)
+
+        text_item = QGraphicsTextItem(label)
+        text_item.setFont(QFont("Arial", int(font_size), QFont.Bold))
+        text_item.setDefaultTextColor(QColor(255, 255, 255))
+        text_item.setZValue(100)
+
+        # Shrink until the label fits inside the pad.
+        for _ in range(4):
+            bounds = text_item.boundingRect()
+            if bounds.width() <= rect.width() * 0.95 and bounds.height() <= rect.height() * 0.95:
                 break
-        
-        # 重新获取最终的文本尺寸
-        final_text_rect = self.text_item.boundingRect()
-        
-        # 计算文本居中位置 - 相对于矩形的绝对坐标
-        text_x = x + (width - final_text_rect.width()) / 2
-        text_y = y + (height - final_text_rect.height()) / 2
-        
-        # 确保文本不会越界
-        text_x = max(x, min(text_x, x + width - final_text_rect.width()))
-        text_y = max(y, min(text_y, y + height - final_text_rect.height()))
-        
-        self.text_item.setPos(text_x, text_y)
-        
-        # 调试信息保存
-        self._debug_info = {
-            'pad_id': pad.pad_id,
-            'pad_number': self._pad_number,
-            'rect_pos': (x, y),
-            'rect_size': (width, height),
-            'text_pos': (text_x, text_y),
-            'font_size': font_size,
-            'text_rect': (text_rect.width(), text_rect.height())
-        }
-    
-    def _get_pad_id_text(self):
-        parts = self.pad.pad_id.split('.')
-        return parts[-1] if len(parts) > 1 else self.pad.pad_id
-    
-    def get_debug_info(self):
-        return hasattr(self, '_debug_info') and self._debug_info or {}
-    
+            font = text_item.font()
+            font.setPointSize(max(4, int(font.pointSize() * 0.8)))
+            text_item.setFont(font)
+
+        bounds = text_item.boundingRect()
+        text_item.setPos(rect.x() + (rect.width() - bounds.width()) / 2,
+                         rect.y() + (rect.height() - bounds.height()) / 2)
+        return text_item
+
     def itemChange(self, change, value):
         if change == QGraphicsRectItem.ItemSelectedChange:
             if value:
-                # 被选中时只改变边框颜色，不改填充颜色
-                self.setPen(QPen(QColor(241, 196, 15), 5))  # 橙色加粗边框
+                self.setPen(QPen(QColor(243, 156, 18), 5))  # orange when selected
             else:
-                # 取消选中时恢复原始边框
-                self.setPen(QPen(QColor(41, 128, 185), 3))  # 恢复深蓝色边框
+                self.setPen(QPen(QColor(41, 128, 185), 3))
         return super().itemChange(change, value)
-    
+
     def mousePressEvent(self, event):
-        # 选中时清除场景中其他项目的选中状态
         if self.scene():
             for item in self.scene().selectedItems():
-                if item != self:
+                if item is not self:
                     item.setSelected(False)
-        
-        # 设置当前项目为选中状态
         self.setSelected(True)
-        
-        # 触发点击信号
         if self.scene() and hasattr(self.scene(), 'pad_clicked'):
             self.scene().pad_clicked.emit(self.pad)
-        
         super().mousePressEvent(event)
-    
-
 
 
 class ChipScene(QGraphicsScene):
     pad_clicked = pyqtSignal(object)
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.pad_items = {}
         self.chip_layout = ChipLayout()
-        self._lf_color_map = {}  # 存储LF到颜色的映射
-    
-    def _get_pad_fill_color(self, pad: Pad) -> QColor:
-        """根据bonding关系获取pad的填充颜色"""
-        bonding = pad.bonding if hasattr(pad, 'bonding') else ""
-        bonding_upper = bonding.upper()
-        
-        # 规则1: Not Bond -> 黑色
-        if bonding_upper == "NOT_BOND" or bonding_upper == "NOT BOND" or bonding_upper == "":
-            return QColor(33, 33, 33, 200)  # 黑色
-        
-        # 规则2: E-pad或VSS_ring -> 深蓝色
-        if "E_PAD" in bonding_upper or "E-PAD" in bonding_upper or "E PAD" in bonding_upper:
-            return QColor(41, 128, 185, 200)  # 深蓝色
-        if "VSS_RING" in bonding_upper or "VSS_RING" in bonding_upper or "VSS RING" in bonding_upper:
-            return QColor(41, 128, 185, 200)  # 深蓝色
-        
-        # 规则3: LF -> 浅色，相同LF使用相同颜色
-        if "LF" in bonding_upper:
-            # 提取LF的唯一标识符
-            lf_key = self._extract_lf_key(bonding_upper)
-            if lf_key not in self._lf_color_map:
-                # 分配一个新的浅色
-                self._lf_color_map[lf_key] = self._get_next_lf_color()
-            return self._lf_color_map[lf_key]
-        
-        # 规则4: SOC, PSRAM, DDRA, DDRB, ROM -> 深灰色
-        if bonding_upper in ["SOC", "PSRAM", "DDRA", "DDRB", "ROM"] or "ROM" in bonding_upper or "DDRA" in bonding_upper or "DDRB" in bonding_upper:
-            return QColor(80, 80, 80, 200)  # 深灰色
-        
-        # 规则5: 未定义或无法分类 -> 深红色
-        return QColor(192, 57, 43, 200)  # 深红色
-    
-    def _extract_lf_key(self, bonding_upper: str) -> str:
-        """从bonding字符串中提取LF的唯一标识符"""
-        # 查找LF及其相关标识
-        import re
-        # 匹配LF后面跟着数字或字母的模式（包括LF.10格式）
-        match = re.search(r'LF[._\s]*([A-Z0-9]+)', bonding_upper)
-        if match:
-            lf_num = match.group(1)
-            return f"LF_{lf_num}"
-        return "LF_DEFAULT"
-    
-    def _get_next_lf_color(self) -> QColor:
-        """获取下一个LF用的浅色（只用2-3种，确保不接近白色）"""
-        lf_colors = [
-            (150, 205, 150, 200),  # 中等绿色 - 避免太亮
-            (135, 206, 250, 200),  # 中等蓝色 - 避免太亮
-            (250, 160, 122, 200),  # 珊瑚色 - 适当的对比度
-        ]
-        used_colors = list(self._lf_color_map.values())
-        
-        # 循环使用3种颜色
-        used_count = len(self._lf_color_map)
-        color_index = used_count % len(lf_colors)
-        return QColor(*lf_colors[color_index])
-    
+        self.pad_items = {}       # pad_id -> PadGraphicsItem
+        self.wire_items = {}      # pad_id -> QGraphicsLineItem
+        self.pin_points = {}      # pin number -> QPointF (inner tip, scene coords)
+        self.ring_centerline = None  # QRectF, scene coords
+        self._frame_params = None
+        self._wires_visible = True
+        self._highlighted_wire = None
+        self._die_rotation = 0       # degrees CCW, multiple of 90
+        self._die_center = (0.0, 0.0)  # die coords, set during redraw
+        self.pad_clicked.connect(self._on_pad_clicked)
+
+    # --- public API ---------------------------------------------------
+
     def set_pads(self, pads, frame_params=None):
-        self.clear()
+        self._frame_params = frame_params
         self.chip_layout.set_pads(pads)
-        self._lf_color_map = {}  # 清空LF颜色映射
-        
-        coords_info = self.chip_layout.get_expanded_coordinates()
-        
-        # 先绘制框架（如果有参数的话）
-        if frame_params and frame_params.get('die_width') and frame_params.get('die_height') and frame_params.get('lf_count'):
-            frame_coords = self._draw_frame_board(frame_params)
-            # 使用框架的坐标范围来设置场景矩形
-            self.setSceneRect(frame_coords['min_x'] - 100, frame_coords['min_y'] - 100, 
-                             frame_coords['width'] + 200, frame_coords['height'] + 200)
-        else:
-            # 如果没有框架，使用原来的die坐标
-            self.setSceneRect(coords_info['min_x'], coords_info['min_y'], 
-                             coords_info['width'], coords_info['height'])
-        
-        self._draw_chip_board()
+        self._redraw()
+
+    def refresh(self):
+        """Redraw with the current pads (e.g. after an edit)."""
+        self._redraw()
+
+    def rotate_die(self, degrees):
+        """Rotate the die and its pads by a multiple of 90 degrees (positive =
+        counterclockwise). The VSS ring and lead frame pins stay fixed; bond
+        wires re-route to the pads' new positions."""
+        self._die_rotation = (self._die_rotation + degrees) % 360
+        self._redraw()
+
+    def set_wires_visible(self, visible: bool):
+        self._wires_visible = visible
+        for item in self.wire_items.values():
+            item.setVisible(visible)
+
+    # --- coordinate helpers ---------------------------------------------
+
+    @staticmethod
+    def _to_scene(x: float, y: float) -> QPointF:
+        """Die coordinates (Y up) -> scene coordinates (Y down)."""
+        return QPointF(x, -y)
+
+    def _rotate_die_point(self, x: float, y: float):
+        """Rotate a die-coordinate point (Y up) around the die center by the
+        current die rotation. Returns die coordinates."""
+        cx, cy = self._die_center
+        dx, dy = x - cx, y - cy
+        r = self._die_rotation % 360
+        if r == 90:      # CCW: (x, y) -> (-y, x)
+            dx, dy = -dy, dx
+        elif r == 180:
+            dx, dy = -dx, -dy
+        elif r == 270:   # CW
+            dx, dy = dy, -dx
+        return cx + dx, cy + dy
+
+    def _pad_scene_rect(self, pad_id: str) -> QRectF:
+        x1, y1, x2, y2 = self.chip_layout.get_pad_rectangle(pad_id)
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        half_w, half_h = (x2 - x1) / 2, (y2 - y1) / 2
+
+        rcx, rcy = self._rotate_die_point(cx, cy)
+        if self._die_rotation % 180 == 90:
+            half_w, half_h = half_h, half_w  # pad turns with the die
+
+        top_left = self._to_scene(rcx - half_w, rcy + half_h)
+        bottom_right = self._to_scene(rcx + half_w, rcy - half_h)
+        return QRectF(top_left, bottom_right).normalized()
+
+    # --- drawing ----------------------------------------------------------
+
+    def _redraw(self):
+        self.clear()
+        self.pad_items = {}
+        self.wire_items = {}
+        self.pin_points = {}
+        self.ring_centerline = None
+        self._highlighted_wire = None
+
+        if not self.chip_layout.pads:
+            return
+
+        bounds = self.chip_layout.get_bounds()
+        self._die_center = (bounds['min_x'] + bounds['width'] / 2,
+                            bounds['min_y'] + bounds['height'] / 2)
+
+        die_rect = self._compute_die_rect()
+        pin_count = self._compute_pin_count()
+
+        self._draw_die(die_rect)
+        self._draw_vss_ring(die_rect)
+        self._draw_lead_frame_pins(die_rect, pin_count)
+        self._draw_bond_wires()
         self._draw_pads()
-    
-    def _draw_chip_board(self):
-        coords_info = self.chip_layout.get_expanded_coordinates()
-        chip_rect = QGraphicsRectItem(
-            coords_info['min_x'], coords_info['min_y'], 
-            coords_info['width'], coords_info['height']
-        )
-        
-        # 更美观的浅色芯片板背景
-        chip_rect.setPen(QPen(QColor(189, 195, 199), 2))
-        chip_rect.setBrush(QBrush(QColor(236, 240, 241, 255)))
-        self.addItem(chip_rect)
-    
-    def _draw_frame_board(self, frame_params):
-        """绘制框架板（Leadframe）"""
-        die_width = frame_params['die_width']
-        die_height = frame_params['die_height']
-        lf_count = frame_params['lf_count']
-        
-        # 计算框架尺寸（框架比die大一圈，留出引脚空间）
-        frame_margin = 180  # 引言和框架边距，单位μm（更接近die）
-        boarder_thickness = 100  # 框架厚度
-        pin_length = 60  # 引脚长度（用于计算外边界）
-        
-        # 计算框架板的总尺寸
-        frame_width = die_width + 2 * frame_margin + 2 * boarder_thickness
-        frame_height = die_height + 2 * frame_margin + 2 * boarder_thickness
-        
-        # 获取当前的中心位置
-        coords_info = self.chip_layout.get_expanded_coordinates()
-        center_x = coords_info['min_x'] + coords_info['width'] / 2
-        center_y = coords_info['min_y'] + coords_info['height'] / 2
-        
-        # 计算框架板的左上角位置
-        frame_min_x = center_x - frame_width / 2
-        frame_min_y = center_y - frame_height / 2
-        
-        # 绘制外框架（矩形边框）
-        frame_rect = QGraphicsRectItem(
-            frame_min_x, frame_min_y, frame_width, frame_height
-        )
-        frame_rect.setPen(QPen(QColor(52, 73, 94, 255), boarder_thickness))  # 深灰色边框
-        frame_rect.setBrush(QBrush(Qt.NoBrush))  # 不填充，只显示边框
-        self.addItem(frame_rect)
-        
-        # 计算引脚位置
-        if lf_count >= 4:
-            # 计算每边的LF数量（4边平分）
-            lf_per_side = lf_count // 4
-            
-            # 绘制引脚标记
-            self._draw_leadframe_pins(
-                frame_min_x, frame_min_y, frame_width, frame_height, 
-                frame_margin, boarder_thickness, lf_per_side
-            )
-        
-        # 返回框架的完整坐标范围（包括引脚）
-        return {
-            'min_x': frame_min_x - pin_length,
-            'min_y': frame_min_y - pin_length,
-            'width': frame_width + 2 * pin_length,
-            'height': frame_height + 2 * pin_length
-        }
-    
-    def _draw_leadframe_pins(self, frame_min_x, frame_min_y, frame_width, frame_height, 
-                            frame_margin, boarder_thickness, lf_per_side):
-        """绘制Leadframe引脚标记"""
-        from PyQt5.QtWidgets import QGraphicsLineItem, QGraphicsEllipseItem
-        
-        # 引脚绘制参数
-        pin_length = 60  # 引脚长度
-        pin_width = 30   # 引脚厚度
-        pin_edge_offset = frame_margin + boarder_thickness / 2  # 引脚边缘偏移
-        
-        # 引脚编号计数器
-        pin_counter = 1
-        
-        # 绘制四边的引脚（按照要求的顺序：左、下、右、上）
-        # 左边：从上往下
-        if lf_per_side > 0:
-            effective_height = frame_height - 2 * pin_edge_offset
-            spacing = effective_height / (lf_per_side + 1)
-            
-            for i in range(1, lf_per_side + 1):
-                pin_y = frame_min_y + pin_edge_offset + i * spacing
-                
-                pin = QGraphicsLineItem(frame_min_x - pin_length, pin_y, frame_min_x, pin_y)
-                pen = QPen(QColor(70, 80, 90, 200), pin_width)
-                pen.setCapStyle(Qt.RoundCap)
-                pin.setPen(pen)
-                self.addItem(pin)
-                
-                self._draw_lf_label(frame_min_x - pin_length - 50, pin_y - 10, pin_counter)
-                pin_counter += 1
-        
-        # 下边：从左往右
-        if lf_per_side > 0:
-            effective_width = frame_width - 2 * pin_edge_offset
-            spacing = effective_width / (lf_per_side + 1)
-            
-            for i in range(1, lf_per_side + 1):
-                pin_x = frame_min_x + pin_edge_offset + i * spacing
-                
-                pin = QGraphicsLineItem(pin_x, frame_min_y + frame_height, pin_x, frame_min_y + frame_height + pin_length)
-                pen = QPen(QColor(70, 80, 90, 200), pin_width)
-                pen.setCapStyle(Qt.RoundCap)
-                pin.setPen(pen)
-                self.addItem(pin)
-                
-                self._draw_lf_label(pin_x - 15, frame_min_y + frame_height + pin_length + 5, pin_counter)
-                pin_counter += 1
-        
-        # 右边：从下往上
-        if lf_per_side > 0:
-            effective_height = frame_height - 2 * pin_edge_offset
-            spacing = effective_height / (lf_per_side + 1)
-            
-            for i in range(lf_per_side, 0, -1):
-                pin_y = frame_min_y + pin_edge_offset + i * spacing
-                
-                pin = QGraphicsLineItem(frame_min_x + frame_width, pin_y, frame_min_x + frame_width + pin_length, pin_y)
-                pen = QPen(QColor(70, 80, 90, 200), pin_width)
-                pen.setCapStyle(Qt.RoundCap)
-                pin.setPen(pen)
-                self.addItem(pin)
-                
-                self._draw_lf_label(frame_min_x + frame_width + pin_length + 10, pin_y - 10, pin_counter)
-                pin_counter += 1
-        
-        # 上边：从右往左
-        if lf_per_side > 0:
-            effective_width = frame_width - 2 * pin_edge_offset
-            spacing = effective_width / (lf_per_side + 1)
-            
-            for i in range(lf_per_side, 0, -1):
-                pin_x = frame_min_x + pin_edge_offset + i * spacing
-                
-                pin = QGraphicsLineItem(pin_x, frame_min_y - pin_length, pin_x, frame_min_y)
-                pen = QPen(QColor(70, 80, 90, 200), pin_width)
-                pen.setCapStyle(Qt.RoundCap)
-                pin.setPen(pen)
-                self.addItem(pin)
-                
-                self._draw_lf_label(pin_x - 15, frame_min_y - pin_length - 25, pin_counter)
-                pin_counter += 1
-    
-    def _draw_lf_label(self, x: float, y: float, number: int):
-        """绘制LF标签（LF.1, LF.2等格式）"""
-        text = QGraphicsTextItem(f"LF.{number}")
-        font = QFont("Arial", 14, QFont.Bold)  # 从8放大到14
-        text.setFont(font)
-        text.setDefaultTextColor(QColor(70, 80, 90, 200))
-        text.setPos(x, y)
-        self.addItem(text)
-    
+
+        bounds = self.itemsBoundingRect()
+        margin = max(bounds.width(), bounds.height()) * 0.03
+        self.setSceneRect(bounds.adjusted(-margin, -margin, margin, margin))
+
+    def _compute_die_rect(self) -> QRectF:
+        """Die outline in scene coordinates, centered on the pads."""
+        bounds = self.chip_layout.get_bounds()
+        center = self._to_scene(bounds['min_x'] + bounds['width'] / 2,
+                                bounds['min_y'] + bounds['height'] / 2)
+
+        params = self._frame_params or {}
+        die_w = params.get('die_width') or bounds['width'] * 1.02
+        die_h = params.get('die_height') or bounds['height'] * 1.02
+        # Never draw the die smaller than its pads.
+        die_w = max(die_w, bounds['width'])
+        die_h = max(die_h, bounds['height'])
+
+        return QRectF(center.x() - die_w / 2, center.y() - die_h / 2, die_w, die_h)
+
+    def _compute_pin_count(self) -> int:
+        params = self._frame_params or {}
+        if params.get('pin_count'):
+            return int(params['pin_count'])
+        # Fall back to the highest LF.<n> in the data, rounded up to x4.
+        max_pin = 0
+        for pad in self.chip_layout.pads:
+            kind, detail = classify_bonding(pad.bonding)
+            if kind == 'lf':
+                max_pin = max(max_pin, detail)
+        return ((max_pin + 3) // 4) * 4 if max_pin else 0
+
+    def _draw_die(self, die_rect: QRectF):
+        die_item = QGraphicsRectItem(die_rect)
+        die_item.setPen(QPen(QColor(127, 140, 141), die_rect.width() * 0.003))
+        die_item.setBrush(QBrush(QColor(236, 240, 241)))
+        die_item.setZValue(-20)
+        self.addItem(die_item)
+
+        label = QGraphicsTextItem("DIE")
+        label.setFont(QFont("Arial", int(die_rect.width() * 0.05)))
+        label.setDefaultTextColor(QColor(189, 195, 199))
+        bounds = label.boundingRect()
+        label.setPos(die_rect.center().x() - bounds.width() / 2,
+                     die_rect.center().y() - bounds.height() / 2)
+        label.setZValue(-19)
+        self.addItem(label)
+
+    def _draw_vss_ring(self, die_rect: QRectF):
+        scale = max(die_rect.width(), die_rect.height())
+        gap = scale * 0.05
+        thickness = scale * 0.04
+
+        inner = die_rect.adjusted(-gap, -gap, gap, gap)
+        outer = inner.adjusted(-thickness, -thickness, thickness, thickness)
+        self.ring_centerline = inner.adjusted(-thickness / 2, -thickness / 2,
+                                              thickness / 2, thickness / 2)
+
+        path = QPainterPath()
+        path.setFillRule(Qt.OddEvenFill)
+        path.addRect(outer)
+        path.addRect(inner)
+
+        ring_item = QGraphicsPathItem(path)
+        ring_item.setPen(QPen(QColor(31, 97, 141), scale * 0.002))
+        ring_item.setBrush(QBrush(QColor(41, 128, 185, 180)))
+        ring_item.setZValue(-15)
+        self.addItem(ring_item)
+
+        label = QGraphicsTextItem("VSS ring (E-PAD ring)")
+        label.setFont(QFont("Arial", int(thickness * 0.55), QFont.Bold))
+        label.setDefaultTextColor(QColor(255, 255, 255))
+        bounds = label.boundingRect()
+        # Centered on the bottom segment of the ring.
+        label.setPos(outer.center().x() - bounds.width() / 2,
+                     outer.bottom() - thickness / 2 - bounds.height() / 2)
+        label.setZValue(-14)
+        self.addItem(label)
+
+    def _draw_lead_frame_pins(self, die_rect: QRectF, pin_count: int):
+        """Individual pins around the package, numbered counterclockwise
+        from the bottom-left corner (matching the bonding data):
+        bottom left->right, right bottom->top, top right->left,
+        left top->bottom."""
+        if pin_count < 4:
+            return
+
+        scale = max(die_rect.width(), die_rect.height())
+        ring_outer_offset = scale * 0.05 + scale * 0.04  # ring gap + thickness
+        pin_gap = scale * 0.05
+        pin_len = scale * 0.10
+        corner_clear = scale * 0.04
+
+        # Rectangle on which the pin inner tips sit.
+        offset = ring_outer_offset + pin_gap
+        pkg = die_rect.adjusted(-offset, -offset, offset, offset)
+
+        # Which pin numbers are actually bonded (for coloring).
+        used_pins = set()
+        for pad in self.chip_layout.pads:
+            kind, detail = classify_bonding(pad.bonding)
+            if kind == 'lf':
+                used_pins.add(detail)
+
+        per_side = pin_count // 4
+        remainder = pin_count % 4
+        side_counts = [per_side + (1 if i < remainder else 0) for i in range(4)]
+
+        pin_number = 1
+        for side_index, count in enumerate(side_counts):
+            if count == 0:
+                continue
+            if side_index in (0, 2):   # bottom, top
+                span = pkg.width() - 2 * corner_clear
+            else:                      # right, left
+                span = pkg.height() - 2 * corner_clear
+            pitch = span / count
+            pin_w = min(pitch * 0.55, scale * 0.03)
+
+            for i in range(count):
+                step = (i + 0.5) * pitch
+                if side_index == 0:    # bottom, left -> right
+                    pos = pkg.left() + corner_clear + step
+                    rect = QRectF(pos - pin_w / 2, pkg.bottom(), pin_w, pin_len)
+                    tip = QPointF(pos, pkg.bottom())
+                elif side_index == 1:  # right, bottom -> top
+                    pos = pkg.bottom() - corner_clear - step
+                    rect = QRectF(pkg.right(), pos - pin_w / 2, pin_len, pin_w)
+                    tip = QPointF(pkg.right(), pos)
+                elif side_index == 2:  # top, right -> left
+                    pos = pkg.right() - corner_clear - step
+                    rect = QRectF(pos - pin_w / 2, pkg.top() - pin_len, pin_w, pin_len)
+                    tip = QPointF(pos, pkg.top())
+                else:                  # left, top -> bottom
+                    pos = pkg.top() + corner_clear + step
+                    rect = QRectF(pkg.left() - pin_len, pos - pin_w / 2, pin_len, pin_w)
+                    tip = QPointF(pkg.left(), pos)
+
+                fill = lf_color(pin_number) if pin_number in used_pins else COLOR_PIN_UNUSED
+                pin_item = QGraphicsRectItem(rect)
+                pin_item.setPen(QPen(QColor(52, 73, 94), scale * 0.0015))
+                pin_item.setBrush(QBrush(fill))
+                pin_item.setZValue(-10)
+                pin_item.setToolTip(f"LF.{pin_number}")
+                self.addItem(pin_item)
+
+                self.pin_points[pin_number] = tip
+                self._draw_pin_label(pin_number, rect, side_index, pin_w)
+                pin_number += 1
+
+    def _draw_pin_label(self, pin_number: int, pin_rect: QRectF, side_index: int, pin_w: float):
+        label = QGraphicsTextItem(str(pin_number))
+        label.setFont(QFont("Arial", max(1, int(pin_w * 0.75)), QFont.Bold))
+        label.setDefaultTextColor(QColor(52, 73, 94))
+        bounds = label.boundingRect()
+
+        pad_off = pin_w * 0.2
+        if side_index == 0:    # bottom: label below the pin
+            label.setPos(pin_rect.center().x() - bounds.width() / 2,
+                         pin_rect.bottom() + pad_off)
+        elif side_index == 1:  # right: label right of the pin
+            label.setPos(pin_rect.right() + pad_off,
+                         pin_rect.center().y() - bounds.height() / 2)
+        elif side_index == 2:  # top: label above the pin
+            label.setPos(pin_rect.center().x() - bounds.width() / 2,
+                         pin_rect.top() - bounds.height() - pad_off)
+        else:                  # left: label left of the pin
+            label.setPos(pin_rect.left() - bounds.width() - pad_off,
+                         pin_rect.center().y() - bounds.height() / 2)
+        label.setZValue(-9)
+        self.addItem(label)
+
+    def _nearest_ring_point(self, point: QPointF) -> QPointF:
+        """Nearest point on the VSS ring centerline for a point inside it."""
+        rect = self.ring_centerline
+        distances = [
+            (point.x() - rect.left(), QPointF(rect.left(), point.y())),
+            (rect.right() - point.x(), QPointF(rect.right(), point.y())),
+            (point.y() - rect.top(), QPointF(point.x(), rect.top())),
+            (rect.bottom() - point.y(), QPointF(point.x(), rect.bottom())),
+        ]
+        return min(distances, key=lambda d: d[0])[1]
+
+    def _draw_bond_wires(self):
+        for pad in self.chip_layout.pads:
+            kind, detail = classify_bonding(pad.bonding)
+
+            source = self._pad_scene_rect(pad.pad_id).center()
+            if kind == 'lf' and detail in self.pin_points:
+                target = self.pin_points[detail]
+                color = lf_color(detail)
+            elif kind == 'vss_ring' and self.ring_centerline is not None:
+                target = self._nearest_ring_point(source)
+                color = COLOR_VSS
+            else:
+                continue  # Not Bond, die-to-die, or unresolvable target
+
+            wire = QGraphicsLineItem(source.x(), source.y(), target.x(), target.y())
+            pen = QPen(QColor(color.red(), color.green(), color.blue(), 130), 1.2)
+            pen.setCosmetic(True)  # constant width at any zoom level
+            wire.setPen(pen)
+            wire.setZValue(5)
+            wire.setVisible(self._wires_visible)
+            self.addItem(wire)
+            self.wire_items[pad.pad_id] = wire
+
     def _draw_pads(self):
-        coords_info = self.chip_layout.get_expanded_coordinates()
-        pads = self.chip_layout.pads
-        
-        for pad in pads:
-            rect_info = self.chip_layout.get_pad_rectangle(pad.pad_id)
-            if rect_info:
-                x1, y1, x2, y2 = rect_info
-                
-                width = x2 - x1
-                height = y2 - y1
-                
-                # 根据bonding关系获取填充颜色
-                fill_color = self._get_pad_fill_color(pad)
-                
-                pad_item = PadGraphicsItem(pad, x1, y1, width, height, fill_color)
-                self.addItem(pad_item)
-                
-                # 单独添加文本项到场景
-                if hasattr(pad_item, 'text_item'):
-                    self.addItem(pad_item.text_item)
-                    # 将文本项与pad关联
-                    pad_item.text_item.setData(0, pad.pad_id)
-                
-                self.pad_items[pad.pad_id] = pad_item
-    
-    def mousePressEvent(self, event):
-        pos = event.scenePos()
-        items = self.items(pos)
-        
-        for item in items:
-            if isinstance(item, PadGraphicsItem):
-                self.pad_clicked.emit(item.pad)
-                return
-        
-        super().mousePressEvent(event)
+        for pad in self.chip_layout.pads:
+            rect = self._pad_scene_rect(pad.pad_id)
+            if rect.isEmpty():
+                continue
+            pad_item = PadGraphicsItem(pad, rect, bonding_color(pad.bonding))
+            self.addItem(pad_item)
+            self.addItem(pad_item.text_item)
+            self.pad_items[pad.pad_id] = pad_item
 
+    # --- interaction ------------------------------------------------------
 
-class PadInfoPanel(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.current_pad = None
-        self.init_ui()
-    
-    def init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        
-        self.info_label = QLabel("点击pad查看详细信息")
-        self.info_label.setStyleSheet("""
-            QLabel {
-                background-color: #f8f9fa;
-                border: 2px solid #bdc3c7;
-                border-radius: 8px;
-                padding: 15px;
-                color: #2c3e50;
-                font-size: 12px;
-                line-height: 1.6;
-            }
-        """)
-        self.info_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        
-        layout.addWidget(self.info_label)
-        
-        self.setStyleSheet("""
-            QWidget {
-                background-color: white;
-                border: none;
-            }
-        """)
-    
-    def show_pad_info(self, pad: Pad):
-        self.current_pad = pad
-        
-        info_text = f"""
-        <b>Pad详细信息</b>
-        <hr style='color: #3498db;'>
-        <b>Pad ID:</b> {pad.pad_id}<br>
-        <b>Pad名称:</b> {pad.pad_name}<br>
-        <b>坐标位置:</b> ({pad.x_coord:.4f}, {pad.y_coord:.4f})<br>
-        <b>尺寸 (X×Y):</b> {pad.x_open:.2f} × {pad.y_open:.2f}<br>
-        <b>网络名称:</b> {pad.net_name}<br>
-        <b>焊接关系:</b> {pad.bonding}
-        """
-        
-        self.info_label.setText(info_text)
-    
-    def clear_info(self):
-        self.current_pad = None
-        self.info_label.setText("点击pad查看详细信息")
+    def _on_pad_clicked(self, pad: Pad):
+        self._highlight_wire(pad.pad_id)
+
+    def _highlight_wire(self, pad_id: str):
+        if self._highlighted_wire is not None:
+            pen = self._highlighted_wire.pen()
+            color = pen.color()
+            color.setAlpha(130)
+            pen.setColor(color)
+            pen.setWidthF(1.2)
+            self._highlighted_wire.setPen(pen)
+            self._highlighted_wire = None
+
+        wire = self.wire_items.get(pad_id)
+        if wire is not None:
+            pen = wire.pen()
+            color = pen.color()
+            color.setAlpha(255)
+            pen.setColor(color)
+            pen.setWidthF(3.0)
+            wire.setPen(pen)
+            wire.setVisible(True)  # show even when wires are toggled off
+            self._highlighted_wire = wire
 
 
 class ChipVisualizationView(QGraphicsView):
+    MIN_SCALE = 0.02
+    MAX_SCALE = 200.0
+
     def __init__(self, scene: ChipScene, parent=None):
         super().__init__(scene, parent)
-        
-        # 启用多种渲染优化
         self.setRenderHint(QPainter.Antialiasing)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
         self.setRenderHint(QPainter.TextAntialiasing)
-        
-        # 优化视图更新
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
-        
-        # 禁用滚动条的双缓冲
-        self.setOptimizationFlag(QGraphicsView.DontSavePainterState)
-        self.setOptimizationFlag(QGraphicsView.DontAdjustForAntialiasing)
-    
+        # Zoom keeps the point under the cursor fixed.
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+
+    def viewportEvent(self, event):
+        # macOS trackpad pinch arrives as a native "zoom" gesture, not a wheel
+        # event; value() is the incremental scale change (e.g. 0.02 = +2%).
+        if event.type() == QEvent.NativeGesture and isinstance(event, QNativeGestureEvent):
+            if event.gestureType() == Qt.ZoomNativeGesture:
+                self._zoom(1.0 + event.value())
+                return True
+        return super().viewportEvent(event)
+
     def wheelEvent(self, event):
-        zoom_in_factor = 1.15
-        zoom_out_factor = 1 / zoom_in_factor
-        
-        if event.angleDelta().y() > 0:
-            zoom_factor = zoom_in_factor
+        # A physical mouse wheel (angleDelta only) zooms; a trackpad two-finger
+        # scroll (reports pixelDelta) pans through the default handler.
+        if event.pixelDelta().isNull():
+            self._zoom(1.15 if event.angleDelta().y() > 0 else 1 / 1.15)
         else:
-            zoom_factor = zoom_out_factor
-        
-        self.scale(zoom_factor, zoom_factor)
-    
+            super().wheelEvent(event)
+
+    def _zoom(self, factor):
+        if factor <= 0:
+            return
+        current = self.transform().m11()
+        new_scale = current * factor
+        if new_scale < self.MIN_SCALE:
+            factor = self.MIN_SCALE / current
+        elif new_scale > self.MAX_SCALE:
+            factor = self.MAX_SCALE / current
+        self.scale(factor, factor)
+
     def fit_in_view(self):
-        """自动缩放到整个场景范围"""
         if self.scene():
-            # 获取场景矩形
-            scene_rect = self.scene().sceneRect()
-            if not scene_rect.isNull():
-                # 添加一些边距
-                margin = 20
-                fitted_rect = scene_rect.adjusted(-margin, -margin, margin, margin)
-                # 适应视图
-                self.fitInView(fitted_rect, Qt.KeepAspectRatio)
+            rect = self.scene().sceneRect()
+            if not rect.isNull():
+                self.fitInView(rect, Qt.KeepAspectRatio)

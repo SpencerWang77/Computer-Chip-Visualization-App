@@ -1,10 +1,21 @@
+# Virtual environments
 .venv/
-*.pyc
+venv/
+
+# Python caches
 __pycache__/
+*.pyc
 *.pyo
 *.pyd
 *.egg-info/
 dist/
 build/
+
+# Editor settings
+.vscode/
+
+# Data and generated output
 *.xlsx
 *.xls
+exports/
+*.log

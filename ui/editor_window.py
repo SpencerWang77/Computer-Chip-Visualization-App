@@ -1,10 +1,10 @@
 import os
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QPalette
+from PyQt5.QtGui import QColor, QDoubleValidator, QFont, QPalette
 from PyQt5.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
-                             QLabel, QMessageBox, QPushButton, QSplitter,
-                             QVBoxLayout, QWidget)
+                             QLabel, QLineEdit, QMessageBox, QPushButton,
+                             QSplitter, QVBoxLayout, QWidget)
 
 from data_handlers import ExcelExporter
 from ui.chip_visualization import ChipScene, ChipVisualizationView
@@ -123,6 +123,42 @@ class EditorWindow(QWidget):
         self.editor.data_changed.connect(self._on_pad_edited)
         edit_layout.addWidget(self.editor)
 
+        # Die placement: numeric alternative to dragging / handle rotation.
+        place_title = QLabel("Die placement:")
+        place_title.setFont(QFont("Arial", 12, QFont.Bold))
+        place_title.setStyleSheet("color: #2c3e50; padding: 5px 10px 0 10px;")
+        edit_layout.addWidget(place_title)
+
+        place_layout = QHBoxLayout()
+        place_layout.setContentsMargins(10, 0, 10, 0)
+        edit_style = "border: 1px solid #bdc3c7; border-radius: 4px; padding: 4px;"
+
+        self.die_x_edit = QLineEdit()
+        self.die_y_edit = QLineEdit()
+        self.die_rot_edit = QLineEdit()
+        for label_text, edit in (("Center X:", self.die_x_edit),
+                                 ("Y:", self.die_y_edit),
+                                 ("Rotation °:", self.die_rot_edit)):
+            edit.setValidator(QDoubleValidator(-1e7, 1e7, 4))
+            edit.setStyleSheet(edit_style)
+            edit.setMinimumWidth(60)
+            edit.returnPressed.connect(self._apply_die_placement)
+            place_layout.addWidget(QLabel(label_text))
+            place_layout.addWidget(edit)
+
+        apply_btn = QPushButton("Apply")
+        apply_btn.setStyleSheet("background-color: #3498db; color: white; padding: 4px 10px;")
+        apply_btn.clicked.connect(self._apply_die_placement)
+        place_layout.addWidget(apply_btn)
+
+        reset_btn = QPushButton("Reset")
+        reset_btn.setToolTip("Recenter the die and clear its rotation")
+        reset_btn.setStyleSheet("background-color: #95a5a6; color: white; padding: 4px 10px;")
+        reset_btn.clicked.connect(self._reset_die_placement)
+        place_layout.addWidget(reset_btn)
+
+        edit_layout.addLayout(place_layout)
+
         # Export button + option
         export_layout = QHBoxLayout()
         self.renumber_checkbox = QCheckBox("Use position number as pad No.")
@@ -170,6 +206,9 @@ class EditorWindow(QWidget):
             "  Orange border — selected pad\n"
             "Bond wires: gray = to a lead frame pin, blue = to the VSS ring.\n"
             "Lead frame pins are drawn solid black and labeled LF.<n>.\n"
+            "The ring and pins are fixed; only the die moves/rotates.\n"
+            "Ring (0,0): the axes at the ring's bottom-left corner are the\n"
+            "origin of the ring coordinate system (shown per pad).\n"
             "\n"
             "\"Show on pad\" = Bond target codes:\n"
             "  <number> — lead frame pin number it bonds to\n"
@@ -209,6 +248,7 @@ class EditorWindow(QWidget):
         main_layout.addWidget(self.status_label)
 
         self.scene.pad_clicked.connect(self._on_pad_selected)
+        self.scene.die_transform_changed.connect(self._on_die_transform_changed)
         self._apply_style()
 
     # --- data -----------------------------------------------------------
@@ -232,10 +272,11 @@ class EditorWindow(QWidget):
 
         self.scene.set_pads(pads, frame_params)
         self.view.fit_in_view()
+        self._sync_die_fields()
         self.export_btn.setEnabled(bool(pads))
         self.status_label.setText(
-            f"Loaded {len(pads)} pads | Die drawn with actual proportion | Click a pad to edit its name, "
-            f"net name or bonding type.")
+            f"Loaded {len(pads)} pads | Drag the die to move it, drag the round "
+            f"handle to rotate it | Click a pad to edit it.")
 
     # --- interaction ------------------------------------------------------
 
@@ -243,7 +284,8 @@ class EditorWindow(QWidget):
         self.scene.set_wires_visible(checked)
 
     def _on_pad_selected(self, pad):
-        self.editor.load_pad(pad, self.scene.rotated_geometry(pad))
+        self.editor.load_pad(pad, self.scene.rotated_geometry(pad),
+                             self.scene.ring_coords(pad))
 
     def _rotate_die(self, degrees):
         """Rotate the die 90° (positive = counterclockwise) and refit the view."""
@@ -251,16 +293,49 @@ class EditorWindow(QWidget):
         self._restore_selection()
         self.view.fit_in_view()
 
+    def _apply_die_placement(self):
+        """Numeric alternative to hand drag/rotation."""
+        try:
+            x = float(self.die_x_edit.text())
+            y = float(self.die_y_edit.text())
+            rotation = float(self.die_rot_edit.text())
+        except ValueError:
+            return
+        self.scene.set_die_transform(x, y, rotation)
+        self._restore_selection()
+
+    def _reset_die_placement(self):
+        self.scene.reset_die_transform()
+        self._restore_selection()
+        self.view.fit_in_view()
+
+    def _on_die_transform_changed(self, center_x, center_y, rotation):
+        """Live sync while the die is dragged/rotated (by hand or numerically)."""
+        self.die_x_edit.setText(f"{center_x:.1f}")
+        self.die_y_edit.setText(f"{center_y:.1f}")
+        self.die_rot_edit.setText(f"{rotation:.1f}")
+        selected = self.editor.current_pad
+        if selected is not None:
+            self.editor.update_rotated(self.scene.rotated_geometry(selected))
+            self.editor.update_ring_coords(self.scene.ring_coords(selected))
+
+    def _sync_die_fields(self):
+        center_x, center_y, rotation = self.scene.die_transform()
+        self.die_x_edit.setText(f"{center_x:.1f}")
+        self.die_y_edit.setText(f"{center_y:.1f}")
+        self.die_rot_edit.setText(f"{rotation:.1f}")
+
     def _on_display_mode_changed(self, _index):
         self.scene.set_display_mode(self.display_combo.currentData())
         self._restore_selection()
 
     def _restore_selection(self):
         """Re-select and re-highlight the current pad after a redraw, and
-        refresh its after-rotation geometry."""
+        refresh its transformed geometry and ring coordinates."""
         selected = self.editor.current_pad
         if selected is not None:
             self.editor.update_rotated(self.scene.rotated_geometry(selected))
+            self.editor.update_ring_coords(self.scene.ring_coords(selected))
             item = self.scene.pad_items.get(selected.pad_id)
             if item is not None:
                 item.setSelected(True)
@@ -268,25 +343,18 @@ class EditorWindow(QWidget):
 
     def _on_pad_edited(self):
         """Redraw so colors and wires reflect the new bonding value."""
-        edited_pad = self.editor.current_pad
         self.scene.refresh()
-        if edited_pad is not None:
-            item = self.scene.pad_items.get(edited_pad.pad_id)
-            if item is not None:
-                item.setSelected(True)
-                self.scene._highlight_wire(edited_pad.pad_id)
+        self._restore_selection()
 
     # --- export ------------------------------------------------------------
 
     def export_modified_excel(self):
         try:
-            default_dir = os.path.join(os.getcwd(), ExcelExporter.DEFAULT_EXPORT_DIR)
-            os.makedirs(default_dir, exist_ok=True)
             exporter = ExcelExporter(source_file=self.source_file)
 
             from datetime import datetime
             suggested = os.path.join(
-                default_dir,
+                os.path.expanduser("~"),
                 f"modified_pads_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
 
             output_path, _ = QFileDialog.getSaveFileName(

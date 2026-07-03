@@ -9,29 +9,20 @@ class ExcelExporter:
 
     The original workbook is never modified. When a source file is given,
     its two header rows are copied so the exported file keeps the same
-    format as the input.
+    format as the input. The caller always chooses the output path.
     """
-
-    DEFAULT_EXPORT_DIR = "exports"
 
     def __init__(self, source_file=None):
         self.source_file = source_file
 
-    def export_modified_data(self, pads, output_path=None):
-        """Export pads to output_path (or a timestamped file in exports/).
-
-        Returns (success, saved_path).
-        """
+    def export_modified_data(self, pads, output_path):
+        """Export pads to output_path. Returns (success, saved_path)."""
         try:
-            if output_path is None:
-                os.makedirs(self.DEFAULT_EXPORT_DIR, exist_ok=True)
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_path = os.path.join(self.DEFAULT_EXPORT_DIR,
-                                           f"modified_pads_{timestamp}.xlsx")
-            else:
-                output_dir = os.path.dirname(output_path)
-                if output_dir:
-                    os.makedirs(output_dir, exist_ok=True)
+            if not output_path:
+                raise ValueError("No output path given")
+            output_dir = os.path.dirname(output_path)
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
 
             workbook = openpyxl.Workbook()
             connect_sheet = workbook.active

@@ -17,5 +17,4 @@ build/
 # Data and generated output
 *.xlsx
 *.xls
-exports/
 *.log

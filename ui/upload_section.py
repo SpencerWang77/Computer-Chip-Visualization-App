@@ -146,9 +146,16 @@ class UploadSection(QGroupBox):
         self.pin_count_input.setStyleSheet(input_style)
         form_layout.addRow("Lead frame pin count:", self.pin_count_input)
 
+        self.ring_size_input = QLineEdit()
+        self.ring_size_input.setPlaceholderText("auto: 1.35 × die size")
+        self.ring_size_input.setValidator(QDoubleValidator(1.0, 1000000.0, 2))
+        self.ring_size_input.setStyleSheet(input_style)
+        form_layout.addRow("VSS ring size (µm):", self.ring_size_input)
+
         info_label = QLabel("* Pin count is auto-filled from the highest LF.<n>\n"
-                            "  in the file (rounded up to a multiple of 4);\n"
-                            "  you can override it before visualizing.")
+                            "  in the file (rounded up to a multiple of 4).\n"
+                            "* VSS ring size is the outer side length of the\n"
+                            "  square ring; leave empty for a spacious default.")
         info_label.setStyleSheet("""
             QLabel {
                 color: #7f8c8d;
@@ -171,10 +178,12 @@ class UploadSection(QGroupBox):
             die_width = float(self.die_width_input.text()) if self.die_width_input.text() else None
             die_height = float(self.die_height_input.text()) if self.die_height_input.text() else None
             pin_count = int(self.pin_count_input.text()) if self.pin_count_input.text() else None
+            ring_size = float(self.ring_size_input.text()) if self.ring_size_input.text() else None
             return {
                 'die_width': die_width,
                 'die_height': die_height,
                 'pin_count': pin_count,
+                'ring_size': ring_size,
             }
         except ValueError:
             return None

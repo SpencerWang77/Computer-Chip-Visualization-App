@@ -30,7 +30,8 @@ class ChipVisApp(QMainWindow):
 
     def init_ui(self):
         self.setWindowTitle("Chip Bonding Visualization")
-        self.setGeometry(100, 100, 800, 600)
+        self.resize(1280, 860)  # fallback size if the user un-maximizes
+        self.setWindowState(self.windowState() | Qt.WindowMaximized)
 
         # One central stack: page 0 = upload, page 1 = editor.
         self.stack = QStackedWidget()
@@ -149,7 +150,7 @@ def main():
     app.setPalette(palette)
 
     window = ChipVisApp()
-    window.showMaximized()
+    window.showMaximized()  # always open filling the screen
     sys.exit(app.exec_())
 
 

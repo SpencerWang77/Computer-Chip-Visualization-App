@@ -894,14 +894,18 @@ class ChipVisualizationView(QGraphicsView):
         self.setRenderHint(QPainter.TextAntialiasing)
         self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setAlignment(Qt.AlignCenter)
         # Zoom keeps the point under the cursor fixed.
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        # Keep the diagram fitted & centered until the user zooms manually.
+        self._auto_fit = True
 
     def viewportEvent(self, event):
         # macOS trackpad pinch arrives as a native "zoom" gesture, not a wheel
         # event; value() is the incremental scale change (e.g. 0.02 = +2%).
         if event.type() == QEvent.NativeGesture and isinstance(event, QNativeGestureEvent):
             if event.gestureType() == Qt.ZoomNativeGesture:
+                self._auto_fit = False
                 self._zoom(1.0 + event.value())
                 return True
         return super().viewportEvent(event)
@@ -910,9 +914,17 @@ class ChipVisualizationView(QGraphicsView):
         # A physical mouse wheel (angleDelta only) zooms; a trackpad two-finger
         # scroll (reports pixelDelta) pans through the default handler.
         if event.pixelDelta().isNull():
+            self._auto_fit = False
             self._zoom(1.15 if event.angleDelta().y() > 0 else 1 / 1.15)
         else:
             super().wheelEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Re-center/fit when the window is resized (e.g. maximized after load),
+        # until the user takes over with a manual zoom.
+        if self._auto_fit:
+            self.fit_in_view()
 
     def _zoom(self, factor):
         if factor <= 0:
@@ -926,6 +938,7 @@ class ChipVisualizationView(QGraphicsView):
         self.scale(factor, factor)
 
     def fit_in_view(self):
+        self._auto_fit = True
         if self.scene():
             rect = self.scene().sceneRect()
             if not rect.isNull():

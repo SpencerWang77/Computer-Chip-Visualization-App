@@ -2,9 +2,10 @@ import os
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QDoubleValidator, QFont, QPalette
-from PyQt5.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
-                             QLabel, QLineEdit, QMessageBox, QPushButton,
-                             QSplitter, QVBoxLayout, QWidget)
+from PyQt5.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout,
+                             QFrame, QHBoxLayout, QLabel, QLineEdit,
+                             QMessageBox, QPushButton, QScrollArea, QSplitter,
+                             QVBoxLayout, QWidget)
 
 from data_handlers import ExcelExporter
 from ui.chip_visualization import ChipScene, ChipVisualizationView
@@ -58,29 +59,6 @@ class EditorWindow(QWidget):
         self.wires_checkbox.setChecked(True)
         self.wires_checkbox.toggled.connect(self._on_wires_toggled)
 
-        rotate_style = """
-            QPushButton {
-                background-color: #3498db;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                padding: 8px 16px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #2980b9;
-            }
-        """
-        rotate_ccw_btn = QPushButton("Rotate 90° CCW")
-        rotate_ccw_btn.setToolTip("Rotate the die and its pads 90° counterclockwise")
-        rotate_ccw_btn.setStyleSheet(rotate_style)
-        rotate_ccw_btn.clicked.connect(lambda: self._rotate_die(90))
-
-        rotate_cw_btn = QPushButton("Rotate 90° CW")
-        rotate_cw_btn.setToolTip("Rotate the die and its pads 90° clockwise")
-        rotate_cw_btn.setStyleSheet(rotate_style)
-        rotate_cw_btn.clicked.connect(lambda: self._rotate_die(-90))
-
         # Choose what each pad displays.
         display_label = QLabel("Show on pad:")
         display_label.setStyleSheet("color: #2c3e50; font-weight: bold;")
@@ -93,14 +71,15 @@ class EditorWindow(QWidget):
             self.display_combo.addItem(text, mode)
         self.display_combo.currentIndexChanged.connect(self._on_display_mode_changed)
 
-        header_layout.addWidget(back_btn)
+        header_layout.setSpacing(12)
         header_layout.addWidget(title_label)
         header_layout.addStretch()
         header_layout.addWidget(self.wires_checkbox)
-        header_layout.addWidget(rotate_ccw_btn)
-        header_layout.addWidget(rotate_cw_btn)
+        header_layout.addSpacing(8)
         header_layout.addWidget(display_label)
         header_layout.addWidget(self.display_combo)
+        header_layout.addSpacing(8)
+        header_layout.addWidget(back_btn)
         main_layout.addLayout(header_layout)
 
         # Content: visualization | editor
@@ -112,10 +91,12 @@ class EditorWindow(QWidget):
 
         edit_widget = QWidget()
         edit_layout = QVBoxLayout(edit_widget)
+        edit_layout.setContentsMargins(14, 12, 14, 12)
+        edit_layout.setSpacing(12)
 
         edit_title = QLabel("Pad Properties")
         edit_title.setFont(QFont("Arial", 14, QFont.Bold))
-        edit_title.setStyleSheet("color: #2c3e50; padding: 10px;")
+        edit_title.setStyleSheet("color: #2c3e50;")
         edit_title.setAlignment(Qt.AlignCenter)
         edit_layout.addWidget(edit_title)
 
@@ -123,77 +104,72 @@ class EditorWindow(QWidget):
         self.editor.data_changed.connect(self._on_pad_edited)
         edit_layout.addWidget(self.editor)
 
+        edit_layout.addWidget(self._divider())
+
         # Die placement: numeric alternative to dragging / handle rotation.
-        place_title = QLabel("Die placement:")
+        place_title = QLabel("Die placement")
         place_title.setFont(QFont("Arial", 12, QFont.Bold))
-        place_title.setStyleSheet("color: #2c3e50; padding: 5px 10px 0 10px;")
+        place_title.setStyleSheet("color: #2c3e50;")
         edit_layout.addWidget(place_title)
 
-        place_layout = QHBoxLayout()
-        place_layout.setContentsMargins(10, 0, 10, 0)
-        edit_style = "border: 1px solid #bdc3c7; border-radius: 4px; padding: 4px;"
+        field_style = "border: 1px solid #bdc3c7; border-radius: 4px; padding: 5px;"
+        place_form = QFormLayout()
+        place_form.setSpacing(8)
+        place_form.setContentsMargins(0, 0, 0, 0)
+        place_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
         self.die_x_edit = QLineEdit()
         self.die_y_edit = QLineEdit()
         self.die_rot_edit = QLineEdit()
-        for label_text, edit in (("Center X:", self.die_x_edit),
-                                 ("Y:", self.die_y_edit),
-                                 ("Rotation °:", self.die_rot_edit)):
+        for label_text, edit in (("Center X (µm):", self.die_x_edit),
+                                 ("Center Y (µm):", self.die_y_edit),
+                                 ("Rotation (°):", self.die_rot_edit)):
             edit.setValidator(QDoubleValidator(-1e7, 1e7, 4))
-            edit.setStyleSheet(edit_style)
-            edit.setMinimumWidth(60)
+            edit.setStyleSheet(field_style)
             edit.returnPressed.connect(self._apply_die_placement)
-            place_layout.addWidget(QLabel(label_text))
-            place_layout.addWidget(edit)
+            place_form.addRow(label_text, edit)
+        edit_layout.addLayout(place_form)
 
+        place_buttons = QHBoxLayout()
+        place_buttons.setSpacing(8)
         apply_btn = QPushButton("Apply")
-        apply_btn.setStyleSheet("background-color: #3498db; color: white; padding: 4px 10px;")
+        apply_btn.setToolTip("Move/rotate the die to these values")
+        apply_btn.setStyleSheet(self._button_style("#3498db", "#2980b9"))
         apply_btn.clicked.connect(self._apply_die_placement)
-        place_layout.addWidget(apply_btn)
-
         reset_btn = QPushButton("Reset")
         reset_btn.setToolTip("Recenter the die and clear its rotation")
-        reset_btn.setStyleSheet("background-color: #95a5a6; color: white; padding: 4px 10px;")
+        reset_btn.setStyleSheet(self._button_style("#95a5a6", "#7f8c8d"))
         reset_btn.clicked.connect(self._reset_die_placement)
-        place_layout.addWidget(reset_btn)
+        place_buttons.addWidget(apply_btn)
+        place_buttons.addWidget(reset_btn)
+        edit_layout.addLayout(place_buttons)
 
-        edit_layout.addLayout(place_layout)
+        edit_layout.addWidget(self._divider())
 
-        # Export button + option
-        export_layout = QHBoxLayout()
+        # Export section
+        export_title = QLabel("Export")
+        export_title.setFont(QFont("Arial", 12, QFont.Bold))
+        export_title.setStyleSheet("color: #2c3e50;")
+        edit_layout.addWidget(export_title)
+
         self.renumber_checkbox = QCheckBox("Use position number as pad No.")
         self.renumber_checkbox.setToolTip(
             "Export each pad numbered by its position around the die\n"
             "(the same numbering as the 'Position number' display mode)")
-        export_layout.addWidget(self.renumber_checkbox)
-        export_layout.addStretch()
+        edit_layout.addWidget(self.renumber_checkbox)
+
         self.export_btn = QPushButton("Export Modified Excel")
-        self.export_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #27ae60;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                padding: 10px 20px;
-                font-size: 12px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #229954;
-            }
-            QPushButton:disabled {
-                background-color: #95a5a6;
-            }
-        """)
+        self.export_btn.setStyleSheet(self._button_style("#27ae60", "#229954", height=38))
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self.export_modified_excel)
-        export_layout.addWidget(self.export_btn)
-        edit_layout.addLayout(export_layout)
+        edit_layout.addWidget(self.export_btn)
+
+        edit_layout.addWidget(self._divider())
 
         # Legend
-        legend_title = QLabel("Legend:")
+        legend_title = QLabel("Legend")
         legend_title.setFont(QFont("Arial", 12, QFont.Bold))
-        legend_title.setStyleSheet("color: #2c3e50; padding: 5px 10px 0 10px;")
+        legend_title.setStyleSheet("color: #2c3e50;")
         edit_layout.addWidget(legend_title)
 
         legend_text = QLabel(
@@ -222,17 +198,26 @@ class EditorWindow(QWidget):
                 border: 1px solid #bdc3c7;
                 border-radius: 5px;
                 padding: 8px;
-                margin: 0 10px;
                 color: #2c3e50;
                 font-size: 11px;
             }
         """)
         legend_text.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        legend_text.setWordWrap(True)
         edit_layout.addWidget(legend_text)
+        edit_layout.addStretch()
 
-        content_splitter.addWidget(edit_widget)
+        # Wrap the right panel so it scrolls when taller than the window.
+        edit_scroll = QScrollArea()
+        edit_scroll.setWidgetResizable(True)
+        edit_scroll.setFrameShape(QScrollArea.NoFrame)
+        edit_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        edit_scroll.setWidget(edit_widget)
+
+        content_splitter.addWidget(edit_scroll)
         content_splitter.setStretchFactor(0, 3)
         content_splitter.setStretchFactor(1, 1)
+        content_splitter.setSizes([1100, 380])
         main_layout.addWidget(content_splitter, 1)
 
         # Status bar
@@ -286,12 +271,6 @@ class EditorWindow(QWidget):
     def _on_pad_selected(self, pad):
         self.editor.load_pad(pad, self.scene.rotated_geometry(pad),
                              self.scene.ring_coords(pad))
-
-    def _rotate_die(self, degrees):
-        """Rotate the die 90° (positive = counterclockwise) and refit the view."""
-        self.scene.rotate_die(degrees)
-        self._restore_selection()
-        self.view.fit_in_view()
 
     def _apply_die_placement(self):
         """Numeric alternative to hand drag/rotation."""
@@ -389,6 +368,29 @@ class EditorWindow(QWidget):
             QMessageBox.critical(self, "Export Error", f"Error during export: {e}")
 
     # --- style ------------------------------------------------------------
+
+    @staticmethod
+    def _divider() -> QFrame:
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("color: #dfe4ea; background-color: #dfe4ea; max-height: 1px;")
+        return line
+
+    @staticmethod
+    def _button_style(base, hover, height=30) -> str:
+        return f"""
+            QPushButton {{
+                background-color: {base};
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 7px 14px;
+                font-weight: bold;
+                min-height: {height}px;
+            }}
+            QPushButton:hover {{ background-color: {hover}; }}
+            QPushButton:disabled {{ background-color: #b2bec3; }}
+        """
 
     def _apply_style(self):
         palette = self.palette()

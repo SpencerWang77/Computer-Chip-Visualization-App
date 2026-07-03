@@ -2,9 +2,9 @@ import os
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QFont, QPalette
-from PyQt5.QtWidgets import (QCheckBox, QFileDialog, QHBoxLayout, QLabel,
-                             QMainWindow, QMessageBox, QPushButton, QSplitter,
-                             QVBoxLayout, QWidget)
+from PyQt5.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
+                             QLabel, QMainWindow, QMessageBox, QPushButton,
+                             QSplitter, QVBoxLayout, QWidget)
 
 from data_handlers import ExcelExporter
 from ui.chip_visualization import ChipScene, ChipVisualizationView
@@ -61,11 +61,25 @@ class EditorWindow(QMainWindow):
         rotate_cw_btn.setStyleSheet(rotate_style)
         rotate_cw_btn.clicked.connect(lambda: self._rotate_die(-90))
 
+        # Choose what each pad displays.
+        display_label = QLabel("Show on pad:")
+        display_label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+        self.display_combo = QComboBox()
+        self.display_combo.setToolTip("Choose what each pad shows in the diagram")
+        # (label, mode key)
+        for text, mode in [("Original pad number", 'soc'),
+                           ("Position number (after rotation)", 'position'),
+                           ("Bond target (LF no. / V·E·N·O·U)", 'bond')]:
+            self.display_combo.addItem(text, mode)
+        self.display_combo.currentIndexChanged.connect(self._on_display_mode_changed)
+
         header_layout.addWidget(title_label)
         header_layout.addStretch()
         header_layout.addWidget(self.wires_checkbox)
         header_layout.addWidget(rotate_ccw_btn)
         header_layout.addWidget(rotate_cw_btn)
+        header_layout.addWidget(display_label)
+        header_layout.addWidget(self.display_combo)
         main_layout.addLayout(header_layout)
 
         # Content: visualization | editor
@@ -114,19 +128,28 @@ class EditorWindow(QMainWindow):
         export_layout.addWidget(self.export_btn)
         edit_layout.addLayout(export_layout)
 
-        # Color legend
-        legend_title = QLabel("Color legend:")
+        # Legend
+        legend_title = QLabel("Legend:")
         legend_title.setFont(QFont("Arial", 12, QFont.Bold))
         legend_title.setStyleSheet("color: #2c3e50; padding: 5px 10px 0 10px;")
         edit_layout.addWidget(legend_title)
 
         legend_text = QLabel(
-            "Black — Not Bond (no wire)\n"
-            "Dark blue — VSS ring / E-PAD ring\n"
-            "Light colors — lead frame pin (pad, wire and pin share a color)\n"
-            "Dark gray — die-to-die (SOC/PSRAM/DDRA/DDRB/ROM)\n"
-            "Dark red — unrecognized bonding value\n"
-            "Orange border — selected pad"
+            "Pad colors (by bonding target):\n"
+            "  Black — Not Bond (no wire)\n"
+            "  Dark blue — VSS ring / E-PAD ring\n"
+            "  Light colors — bonded to a lead frame pin\n"
+            "  Dark gray — die-to-die (SOC/PSRAM/DDRA/DDRB/ROM)\n"
+            "  Dark red — unrecognized bonding value\n"
+            "  Orange border — selected pad\n"
+            "Bond wires: gray = to a lead frame pin, blue = to the VSS ring.\n"
+            "Lead frame pins are drawn solid black and labeled LF.<n>.\n"
+            "\n"
+            "\"Show on pad\" = Bond target codes:\n"
+            "  <number> — lead frame pin number it bonds to\n"
+            "  V — VSS ring        E — E-pad\n"
+            "  N — Not bonded      O — other die\n"
+            "  U — undefined / unrecognized"
         )
         legend_text.setStyleSheet("""
             QLabel {
@@ -159,7 +182,7 @@ class EditorWindow(QMainWindow):
         """)
         main_layout.addWidget(self.status_label)
 
-        self.scene.pad_clicked.connect(self.editor.load_pad)
+        self.scene.pad_clicked.connect(self._on_pad_selected)
         self._apply_style()
 
     # --- data -----------------------------------------------------------
@@ -172,24 +195,37 @@ class EditorWindow(QMainWindow):
         self.view.fit_in_view()
         self.export_btn.setEnabled(bool(pads))
         self.status_label.setText(
-            f"Loaded {len(pads)} pads | Click a pad to edit its name, "
-            f"net name or bonding target")
+            f"Loaded {len(pads)} pads | Die drawn with actual proportion | Click a pad to edit its name, "
+            f"net name or bonding type.")
 
     # --- interaction ------------------------------------------------------
 
     def _on_wires_toggled(self, checked):
         self.scene.set_wires_visible(checked)
 
+    def _on_pad_selected(self, pad):
+        self.editor.load_pad(pad, self.scene.rotated_geometry(pad))
+
     def _rotate_die(self, degrees):
         """Rotate the die 90° (positive = counterclockwise) and refit the view."""
         self.scene.rotate_die(degrees)
+        self._restore_selection()
+        self.view.fit_in_view()
+
+    def _on_display_mode_changed(self, _index):
+        self.scene.set_display_mode(self.display_combo.currentData())
+        self._restore_selection()
+
+    def _restore_selection(self):
+        """Re-select and re-highlight the current pad after a redraw, and
+        refresh its after-rotation geometry."""
         selected = self.editor.current_pad
         if selected is not None:
+            self.editor.update_rotated(self.scene.rotated_geometry(selected))
             item = self.scene.pad_items.get(selected.pad_id)
             if item is not None:
                 item.setSelected(True)
                 self.scene._highlight_wire(selected.pad_id)
-        self.view.fit_in_view()
 
     def _on_pad_edited(self):
         """Redraw so colors and wires reflect the new bonding value."""
@@ -220,12 +256,14 @@ class EditorWindow(QMainWindow):
             if not output_path:
                 return
 
-            success, saved_path = exporter.export_modified_data(self.pads, output_path)
+            # Bake the current rotation into the exported coordinates/sizes.
+            export_pads = self.scene.pads_with_rotation_applied()
+            success, saved_path = exporter.export_modified_data(export_pads, output_path)
             if not success:
                 QMessageBox.warning(self, "Export Failed", "Could not export the Excel file.")
                 return
 
-            summary = exporter.get_export_summary(self.pads)
+            summary = exporter.get_export_summary(export_pads)
             QMessageBox.information(
                 self, "Export Successful",
                 f"Saved to: {saved_path}\n"

@@ -32,7 +32,11 @@ COLOR_NOT_BOND = QColor(33, 33, 33, 220)        # black
 COLOR_VSS = QColor(41, 128, 185, 220)           # dark blue
 COLOR_DIE_TO_DIE = QColor(80, 80, 80, 220)      # dark gray
 COLOR_UNDEFINED = QColor(192, 57, 43, 220)      # dark red
-COLOR_PIN_UNUSED = QColor(189, 195, 199, 180)   # light gray
+COLOR_PIN = QColor(20, 20, 20, 255)             # solid black (all lead frame pins)
+
+# Bond wires are drawn in one uniform color per target type (for a clean look).
+COLOR_LF_WIRE = QColor(127, 140, 141)           # all lead-frame bond wires
+COLOR_RING_WIRE = QColor(41, 128, 185)          # all VSS-ring bond wires
 
 # Palette for LF pin groups; a pin keeps the same color as the pads bonded
 # to it (keyed by pin number, so LF.5 is always the same color).
@@ -48,17 +52,18 @@ LF_PALETTE = [
 
 def classify_bonding(bonding: str):
     """Return (kind, detail) where kind is one of
-    'not_bond' | 'vss_ring' | 'lf' | 'die' | 'unknown'.
-    For 'lf', detail is the pin number (int)."""
+    'not_bond' | 'vss_ring' | 'epad' | 'lf' | 'die' | 'unknown'.
+    For 'lf', detail is the pin number (int). 'vss_ring' and 'epad' share the
+    same color but carry different display codes (V vs E)."""
     value = (bonding or "").strip()
     upper = value.upper()
 
     if upper in ("", "NOT BOND", "NOT_BOND"):
         return 'not_bond', None
 
-    if "VSS" in upper and "RING" in upper:
-        return 'vss_ring', None
     if "E-PAD" in upper or "E_PAD" in upper or "EPAD" in upper:
+        return 'epad', None
+    if "VSS" in upper and "RING" in upper:
         return 'vss_ring', None
 
     match = _LF_PATTERN.match(value)
@@ -71,6 +76,21 @@ def classify_bonding(bonding: str):
     return 'unknown', None
 
 
+def bond_code(bonding: str) -> str:
+    """Short code shown on a pad in the 'bond target' display mode:
+    the LF pin number, or V / E / N / O / U."""
+    kind, detail = classify_bonding(bonding)
+    if kind == 'lf':
+        return str(detail)
+    return {
+        'vss_ring': 'V',
+        'epad': 'E',
+        'not_bond': 'N',
+        'die': 'O',
+        'unknown': 'U',
+    }.get(kind, 'U')
+
+
 def lf_color(pin_number: int) -> QColor:
     return LF_PALETTE[pin_number % len(LF_PALETTE)]
 
@@ -79,7 +99,7 @@ def bonding_color(bonding: str) -> QColor:
     kind, detail = classify_bonding(bonding)
     if kind == 'not_bond':
         return COLOR_NOT_BOND
-    if kind == 'vss_ring':
+    if kind in ('vss_ring', 'epad'):
         return COLOR_VSS
     if kind == 'lf':
         return lf_color(detail)
@@ -91,7 +111,7 @@ def bonding_color(bonding: str) -> QColor:
 class PadGraphicsItem(QGraphicsRectItem):
     """A pad rectangle with its number centered inside."""
 
-    def __init__(self, pad: Pad, rect: QRectF, fill_color: QColor):
+    def __init__(self, pad: Pad, rect: QRectF, fill_color: QColor, label: str):
         super().__init__(rect)
         self.pad = pad
         self.setFlag(QGraphicsRectItem.ItemIsSelectable)
@@ -101,10 +121,9 @@ class PadGraphicsItem(QGraphicsRectItem):
         self.setPen(QPen(QColor(41, 128, 185), 3))
         self.setBrush(QBrush(fill_color))
 
-        self.text_item = self._make_label(rect)
+        self.text_item = self._make_label(rect, label)
 
-    def _make_label(self, rect: QRectF) -> QGraphicsTextItem:
-        label = self.pad.pad_id.split('.')[-1]
+    def _make_label(self, rect: QRectF, label: str) -> QGraphicsTextItem:
         min_dim = min(rect.width(), rect.height())
         # Longer numbers get a smaller starting font.
         divisor = {1: 1.8, 2: 2.5}.get(len(label), 3.5)
@@ -163,6 +182,8 @@ class ChipScene(QGraphicsScene):
         self._highlighted_wire = None
         self._die_rotation = 0       # degrees CCW, multiple of 90
         self._die_center = (0.0, 0.0)  # die coords, set during redraw
+        self._display_mode = 'soc'   # 'soc' | 'position' | 'bond'
+        self._position_numbers = {}  # pad_id -> positional index (int)
         self.pad_clicked.connect(self._on_pad_clicked)
 
     # --- public API ---------------------------------------------------
@@ -176,6 +197,14 @@ class ChipScene(QGraphicsScene):
         """Redraw with the current pads (e.g. after an edit)."""
         self._redraw()
 
+    def set_display_mode(self, mode: str):
+        """Choose what each pad shows: 'soc' (original number),
+        'position' (positional number for the current rotation), or
+        'bond' (LF pin number / V / E / N / O / U)."""
+        if mode != self._display_mode:
+            self._display_mode = mode
+            self._redraw()
+
     def rotate_die(self, degrees):
         """Rotate the die and its pads by a multiple of 90 degrees (positive =
         counterclockwise). The VSS ring and lead frame pins stay fixed; bond
@@ -187,6 +216,33 @@ class ChipScene(QGraphicsScene):
         self._wires_visible = visible
         for item in self.wire_items.values():
             item.setVisible(visible)
+
+    @property
+    def die_rotation(self) -> int:
+        return self._die_rotation
+
+    def rotated_geometry(self, pad: Pad):
+        """(x_coord, y_coord, x_open, y_open) for a pad after the current die
+        rotation. At rotation 0 this equals the pad's stored values."""
+        rx, ry = self._rotate_die_point(pad.x_coord, pad.y_coord)
+        x_open, y_open = pad.x_open, pad.y_open
+        if self._die_rotation % 180 == 90:
+            x_open, y_open = y_open, x_open  # size turns with the die
+        return rx, ry, x_open, y_open
+
+    def pads_with_rotation_applied(self):
+        """Clones of the current pads with the rotation baked into their
+        coordinates and sizes (used when exporting)."""
+        result = []
+        for pad in self.chip_layout.pads:
+            rx, ry, x_open, y_open = self.rotated_geometry(pad)
+            clone = pad.clone()
+            clone.x_coord, clone.y_coord = rx, ry
+            clone.x_open, clone.y_open = x_open, y_open
+            if pad.is_modified or self._die_rotation != 0:
+                clone.mark_as_modified()
+            result.append(clone)
+        return result
 
     # --- coordinate helpers ---------------------------------------------
 
@@ -222,6 +278,43 @@ class ChipScene(QGraphicsScene):
         bottom_right = self._to_scene(rcx + half_w, rcy - half_h)
         return QRectF(top_left, bottom_right).normalized()
 
+    def _compute_position_numbers(self):
+        """Number pads 1..N by their position around the die, using the same
+        convention as the lead frame pins: left side top->down, bottom side
+        left->right, right side bottom->up, top side right->left. Positions
+        use the pads' current (rotated) placement, so the numbers update when
+        the die is rotated."""
+        cx, cy = self._die_center
+        bounds = self.chip_layout.get_bounds()
+        half_w = max(bounds['width'] / 2, 1e-6)
+        half_h = max(bounds['height'] / 2, 1e-6)
+
+        left, bottom, right, top = [], [], [], []
+        for pad in self.chip_layout.pads:
+            rx, ry = self._rotate_die_point(pad.x_coord, pad.y_coord)
+            nx, ny = (rx - cx) / half_w, (ry - cy) / half_h  # die coords, Y up
+            if abs(nx) >= abs(ny):
+                (left if nx < 0 else right).append((rx, ry, pad.pad_id))
+            else:
+                (bottom if ny < 0 else top).append((rx, ry, pad.pad_id))
+
+        left.sort(key=lambda p: -p[1])    # top -> down  (Y up: high y first)
+        bottom.sort(key=lambda p: p[0])   # left -> right
+        right.sort(key=lambda p: p[1])    # bottom -> up
+        top.sort(key=lambda p: -p[0])     # right -> left
+
+        numbers = {}
+        for i, (_, _, pad_id) in enumerate(left + bottom + right + top, 1):
+            numbers[pad_id] = i
+        return numbers
+
+    def _pad_label(self, pad: Pad) -> str:
+        if self._display_mode == 'position':
+            return str(self._position_numbers.get(pad.pad_id, '?'))
+        if self._display_mode == 'bond':
+            return bond_code(pad.bonding)
+        return pad.pad_id.split('.')[-1]  # 'soc'
+
     # --- drawing ----------------------------------------------------------
 
     def _redraw(self):
@@ -238,13 +331,15 @@ class ChipScene(QGraphicsScene):
         bounds = self.chip_layout.get_bounds()
         self._die_center = (bounds['min_x'] + bounds['width'] / 2,
                             bounds['min_y'] + bounds['height'] / 2)
+        self._position_numbers = self._compute_position_numbers()
 
         die_rect = self._compute_die_rect()
+        die_square = self._die_bounding_square()
         pin_count = self._compute_pin_count()
 
         self._draw_die(die_rect)
-        self._draw_vss_ring(die_rect)
-        self._draw_lead_frame_pins(die_rect, pin_count)
+        self._draw_vss_ring(die_square)
+        self._draw_lead_frame_pins(die_square, pin_count)
         self._draw_bond_wires()
         self._draw_pads()
 
@@ -252,20 +347,36 @@ class ChipScene(QGraphicsScene):
         margin = max(bounds.width(), bounds.height()) * 0.03
         self.setSceneRect(bounds.adjusted(-margin, -margin, margin, margin))
 
-    def _compute_die_rect(self) -> QRectF:
-        """Die outline in scene coordinates, centered on the pads."""
+    def _base_die_dims(self):
+        """Die (width, height) in the unrotated orientation, at least large
+        enough to contain the pads."""
         bounds = self.chip_layout.get_bounds()
-        center = self._to_scene(bounds['min_x'] + bounds['width'] / 2,
-                                bounds['min_y'] + bounds['height'] / 2)
-
         params = self._frame_params or {}
         die_w = params.get('die_width') or bounds['width'] * 1.02
         die_h = params.get('die_height') or bounds['height'] * 1.02
-        # Never draw the die smaller than its pads.
         die_w = max(die_w, bounds['width'])
         die_h = max(die_h, bounds['height'])
+        return die_w, die_h
 
+    def _compute_die_rect(self) -> QRectF:
+        """Die outline in scene coordinates. Width and height swap for 90/270
+        rotations so the die turns like a physical rectangle and always
+        contains its rotated pads."""
+        cx, cy = self._die_center
+        center = self._to_scene(cx, cy)
+        die_w, die_h = self._base_die_dims()
+        if self._die_rotation % 180 == 90:
+            die_w, die_h = die_h, die_w
         return QRectF(center.x() - die_w / 2, center.y() - die_h / 2, die_w, die_h)
+
+    def _die_bounding_square(self) -> QRectF:
+        """Fixed square that bounds the die at any rotation (side = the larger
+        die dimension). The VSS ring and the lead frame pins are built from
+        this square, so both stay fixed and always contain the rotating die."""
+        cx, cy = self._die_center
+        center = self._to_scene(cx, cy)
+        side = max(self._base_die_dims())
+        return QRectF(center.x() - side / 2, center.y() - side / 2, side, side)
 
     def _compute_pin_count(self) -> int:
         params = self._frame_params or {}
@@ -295,12 +406,14 @@ class ChipScene(QGraphicsScene):
         label.setZValue(-19)
         self.addItem(label)
 
-    def _draw_vss_ring(self, die_rect: QRectF):
-        scale = max(die_rect.width(), die_rect.height())
+    def _draw_vss_ring(self, die_square: QRectF):
+        """The VSS ring is a fixed square (it does not rotate with the die) that
+        always surrounds the die with a spacing gap on every side."""
+        scale = die_square.width()
         gap = scale * 0.05
         thickness = scale * 0.04
 
-        inner = die_rect.adjusted(-gap, -gap, gap, gap)
+        inner = die_square.adjusted(-gap, -gap, gap, gap)
         outer = inner.adjusted(-thickness, -thickness, thickness, thickness)
         self.ring_centerline = inner.adjusted(-thickness / 2, -thickness / 2,
                                               thickness / 2, thickness / 2)
@@ -326,15 +439,17 @@ class ChipScene(QGraphicsScene):
         label.setZValue(-14)
         self.addItem(label)
 
-    def _draw_lead_frame_pins(self, die_rect: QRectF, pin_count: int):
-        """Individual pins around the package, numbered counterclockwise
-        from the bottom-left corner (matching the bonding data):
-        bottom left->right, right bottom->top, top right->left,
-        left top->bottom."""
+    def _draw_lead_frame_pins(self, frame_rect: QRectF, pin_count: int):
+        """Individual pins around the package, all drawn solid black and
+        labeled 'LF.<n>'. Numbering: left side top->down, bottom side
+        left->right, right side bottom->up, top side right->left.
+
+        frame_rect is rotation-invariant, so the pins stay fixed while the die
+        rotates inside them."""
         if pin_count < 4:
             return
 
-        scale = max(die_rect.width(), die_rect.height())
+        scale = max(frame_rect.width(), frame_rect.height())
         ring_outer_offset = scale * 0.05 + scale * 0.04  # ring gap + thickness
         pin_gap = scale * 0.05
         pin_len = scale * 0.10
@@ -342,80 +457,80 @@ class ChipScene(QGraphicsScene):
 
         # Rectangle on which the pin inner tips sit.
         offset = ring_outer_offset + pin_gap
-        pkg = die_rect.adjusted(-offset, -offset, offset, offset)
+        pkg = frame_rect.adjusted(-offset, -offset, offset, offset)
 
-        # Which pin numbers are actually bonded (for coloring).
-        used_pins = set()
-        for pad in self.chip_layout.pads:
-            kind, detail = classify_bonding(pad.bonding)
-            if kind == 'lf':
-                used_pins.add(detail)
-
+        # Distribute pins over the four sides; any remainder goes to the first
+        # sides in numbering order (left, bottom, right, top).
+        order = ['left', 'bottom', 'right', 'top']
         per_side = pin_count // 4
         remainder = pin_count % 4
-        side_counts = [per_side + (1 if i < remainder else 0) for i in range(4)]
+        counts = {side: per_side + (1 if i < remainder else 0)
+                  for i, side in enumerate(order)}
 
         pin_number = 1
-        for side_index, count in enumerate(side_counts):
+        for side in order:
+            count = counts[side]
             if count == 0:
                 continue
-            if side_index in (0, 2):   # bottom, top
-                span = pkg.width() - 2 * corner_clear
-            else:                      # right, left
-                span = pkg.height() - 2 * corner_clear
+            vertical = side in ('left', 'right')
+            span = (pkg.height() if vertical else pkg.width()) - 2 * corner_clear
             pitch = span / count
             pin_w = min(pitch * 0.55, scale * 0.03)
 
             for i in range(count):
                 step = (i + 0.5) * pitch
-                if side_index == 0:    # bottom, left -> right
-                    pos = pkg.left() + corner_clear + step
-                    rect = QRectF(pos - pin_w / 2, pkg.bottom(), pin_w, pin_len)
-                    tip = QPointF(pos, pkg.bottom())
-                elif side_index == 1:  # right, bottom -> top
-                    pos = pkg.bottom() - corner_clear - step
-                    rect = QRectF(pkg.right(), pos - pin_w / 2, pin_len, pin_w)
-                    tip = QPointF(pkg.right(), pos)
-                elif side_index == 2:  # top, right -> left
-                    pos = pkg.right() - corner_clear - step
-                    rect = QRectF(pos - pin_w / 2, pkg.top() - pin_len, pin_w, pin_len)
-                    tip = QPointF(pos, pkg.top())
-                else:                  # left, top -> bottom
+                if side == 'left':      # top -> down
                     pos = pkg.top() + corner_clear + step
                     rect = QRectF(pkg.left() - pin_len, pos - pin_w / 2, pin_len, pin_w)
                     tip = QPointF(pkg.left(), pos)
+                elif side == 'bottom':  # left -> right
+                    pos = pkg.left() + corner_clear + step
+                    rect = QRectF(pos - pin_w / 2, pkg.bottom(), pin_w, pin_len)
+                    tip = QPointF(pos, pkg.bottom())
+                elif side == 'right':   # bottom -> up
+                    pos = pkg.bottom() - corner_clear - step
+                    rect = QRectF(pkg.right(), pos - pin_w / 2, pin_len, pin_w)
+                    tip = QPointF(pkg.right(), pos)
+                else:                   # top: right -> left
+                    pos = pkg.right() - corner_clear - step
+                    rect = QRectF(pos - pin_w / 2, pkg.top() - pin_len, pin_w, pin_len)
+                    tip = QPointF(pos, pkg.top())
 
-                fill = lf_color(pin_number) if pin_number in used_pins else COLOR_PIN_UNUSED
                 pin_item = QGraphicsRectItem(rect)
-                pin_item.setPen(QPen(QColor(52, 73, 94), scale * 0.0015))
-                pin_item.setBrush(QBrush(fill))
+                pin_item.setPen(QPen(QColor(0, 0, 0), scale * 0.0015))
+                pin_item.setBrush(QBrush(COLOR_PIN))
                 pin_item.setZValue(-10)
                 pin_item.setToolTip(f"LF.{pin_number}")
                 self.addItem(pin_item)
 
                 self.pin_points[pin_number] = tip
-                self._draw_pin_label(pin_number, rect, side_index, pin_w)
+                self._draw_pin_label(pin_number, rect, side, pin_w)
                 pin_number += 1
 
-    def _draw_pin_label(self, pin_number: int, pin_rect: QRectF, side_index: int, pin_w: float):
-        label = QGraphicsTextItem(str(pin_number))
-        label.setFont(QFont("Arial", max(1, int(pin_w * 0.75)), QFont.Bold))
-        label.setDefaultTextColor(QColor(52, 73, 94))
+    def _draw_pin_label(self, pin_number: int, pin_rect: QRectF, side: str, pin_w: float):
+        label = QGraphicsTextItem(f"LF.{pin_number}")
+        label.setFont(QFont("Arial", max(1, int(pin_w * 0.7)), QFont.Bold))
+        label.setDefaultTextColor(QColor(20, 20, 20))
         bounds = label.boundingRect()
+        pad_off = pin_w * 0.3
 
-        pad_off = pin_w * 0.2
-        if side_index == 0:    # bottom: label below the pin
-            label.setPos(pin_rect.center().x() - bounds.width() / 2,
-                         pin_rect.bottom() + pad_off)
-        elif side_index == 1:  # right: label right of the pin
-            label.setPos(pin_rect.right() + pad_off,
-                         pin_rect.center().y() - bounds.height() / 2)
-        elif side_index == 2:  # top: label above the pin
-            label.setPos(pin_rect.center().x() - bounds.width() / 2,
-                         pin_rect.top() - bounds.height() - pad_off)
-        else:                  # left: label left of the pin
+        if side == 'left':
             label.setPos(pin_rect.left() - bounds.width() - pad_off,
                          pin_rect.center().y() - bounds.height() / 2)
+        elif side == 'right':
+            label.setPos(pin_rect.right() + pad_off,
+                         pin_rect.center().y() - bounds.height() / 2)
+        else:
+            # Top/bottom labels run perpendicular to the edge so long "LF.<n>"
+            # labels don't overlap their neighbors.
+            label.setTransformOriginPoint(bounds.width() / 2, bounds.height() / 2)
+            label.setRotation(-90)
+            px = pin_rect.center().x()
+            if side == 'top':
+                cy = pin_rect.top() - pad_off - bounds.width() / 2
+            else:  # bottom
+                cy = pin_rect.bottom() + pad_off + bounds.width() / 2
+            label.setPos(px - bounds.width() / 2, cy - bounds.height() / 2)
         label.setZValue(-9)
         self.addItem(label)
 
@@ -437,10 +552,10 @@ class ChipScene(QGraphicsScene):
             source = self._pad_scene_rect(pad.pad_id).center()
             if kind == 'lf' and detail in self.pin_points:
                 target = self.pin_points[detail]
-                color = lf_color(detail)
-            elif kind == 'vss_ring' and self.ring_centerline is not None:
+                color = COLOR_LF_WIRE   # uniform for all lead-frame wires
+            elif kind in ('vss_ring', 'epad') and self.ring_centerline is not None:
                 target = self._nearest_ring_point(source)
-                color = COLOR_VSS
+                color = COLOR_RING_WIRE  # uniform for all ring wires
             else:
                 continue  # Not Bond, die-to-die, or unresolvable target
 
@@ -458,7 +573,8 @@ class ChipScene(QGraphicsScene):
             rect = self._pad_scene_rect(pad.pad_id)
             if rect.isEmpty():
                 continue
-            pad_item = PadGraphicsItem(pad, rect, bonding_color(pad.bonding))
+            pad_item = PadGraphicsItem(pad, rect, bonding_color(pad.bonding),
+                                       self._pad_label(pad))
             self.addItem(pad_item)
             self.addItem(pad_item.text_item)
             self.pad_items[pad.pad_id] = pad_item

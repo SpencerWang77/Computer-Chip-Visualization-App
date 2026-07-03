@@ -1,35 +1,55 @@
 import os
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPalette
 from PyQt5.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QHBoxLayout,
-                             QLabel, QMainWindow, QMessageBox, QPushButton,
-                             QSplitter, QVBoxLayout, QWidget)
+                             QLabel, QMessageBox, QPushButton, QSplitter,
+                             QVBoxLayout, QWidget)
 
 from data_handlers import ExcelExporter
 from ui.chip_visualization import ChipScene, ChipVisualizationView
 from ui.pad_editor import PadEditor
 
 
-class EditorWindow(QMainWindow):
-    """Main editor: bonding diagram on the left, pad editor on the right."""
+class EditorWindow(QWidget):
+    """Editor page: bonding diagram on the left, pad editor on the right.
+
+    This is a page inside the single application window; it emits
+    `back_requested` when the user wants to return to the upload page.
+    """
+
+    back_requested = pyqtSignal()
 
     def __init__(self):
         super().__init__()
         self.pads = []
         self.source_file = None
+        self.setAutoFillBackground(True)
         self.init_ui()
 
     def init_ui(self):
-        self.setWindowTitle("Chip Pad Editor")
-        self.setGeometry(100, 100, 1600, 1000)
-
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
+        main_layout = QVBoxLayout(self)
 
         # Header
         header_layout = QHBoxLayout()
+
+        back_btn = QPushButton("← Back to Upload")
+        back_btn.setToolTip("Return to the upload page")
+        back_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e74c3c;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #c0392b;
+            }
+        """)
+        back_btn.clicked.connect(self.back_requested.emit)
+
         title_label = QLabel("Chip Pad Editor")
         title_label.setFont(QFont("Arial", 20, QFont.Bold))
         title_label.setStyleSheet("color: #2c3e50;")
@@ -73,6 +93,7 @@ class EditorWindow(QMainWindow):
             self.display_combo.addItem(text, mode)
         self.display_combo.currentIndexChanged.connect(self._on_display_mode_changed)
 
+        header_layout.addWidget(back_btn)
         header_layout.addWidget(title_label)
         header_layout.addStretch()
         header_layout.addWidget(self.wires_checkbox)
@@ -102,8 +123,13 @@ class EditorWindow(QMainWindow):
         self.editor.data_changed.connect(self._on_pad_edited)
         edit_layout.addWidget(self.editor)
 
-        # Export button
+        # Export button + option
         export_layout = QHBoxLayout()
+        self.renumber_checkbox = QCheckBox("Use position number as pad No.")
+        self.renumber_checkbox.setToolTip(
+            "Export each pad numbered by its position around the die\n"
+            "(the same numbering as the 'Position number' display mode)")
+        export_layout.addWidget(self.renumber_checkbox)
         export_layout.addStretch()
         self.export_btn = QPushButton("Export Modified Excel")
         self.export_btn.setStyleSheet("""
@@ -188,9 +214,22 @@ class EditorWindow(QMainWindow):
     # --- data -----------------------------------------------------------
 
     def set_data(self, pads, frame_params=None, source_file=None):
-        """Show the given pads (used by the upload window and file loading)."""
+        """Show the given pads (used by the upload page for each new file)."""
         self.pads = pads
         self.source_file = source_file
+
+        # Reset view options for a fresh file (without triggering redraws).
+        self.scene.reset_view()
+        controls = (self.display_combo, self.wires_checkbox, self.renumber_checkbox)
+        for widget in controls:
+            widget.blockSignals(True)
+        self.display_combo.setCurrentIndex(0)
+        self.wires_checkbox.setChecked(True)
+        self.renumber_checkbox.setChecked(False)
+        for widget in controls:
+            widget.blockSignals(False)
+        self.editor.clear()
+
         self.scene.set_pads(pads, frame_params)
         self.view.fit_in_view()
         self.export_btn.setEnabled(bool(pads))
@@ -256,8 +295,10 @@ class EditorWindow(QMainWindow):
             if not output_path:
                 return
 
-            # Bake the current rotation into the exported coordinates/sizes.
-            export_pads = self.scene.pads_with_rotation_applied()
+            # Bake the current rotation into the exported coordinates/sizes,
+            # optionally renumbering pads by their position.
+            export_pads = self.scene.pads_with_rotation_applied(
+                renumber_by_position=self.renumber_checkbox.isChecked())
             success, saved_path = exporter.export_modified_data(export_pads, output_path)
             if not success:
                 QMessageBox.warning(self, "Export Failed", "Could not export the Excel file.")
@@ -282,7 +323,6 @@ class EditorWindow(QMainWindow):
     # --- style ------------------------------------------------------------
 
     def _apply_style(self):
-        self.setStyleSheet("QMainWindow { background-color: #f5f6fa; }")
         palette = self.palette()
         palette.setColor(QPalette.Window, QColor(245, 246, 250))
         palette.setColor(QPalette.WindowText, QColor(44, 62, 80))

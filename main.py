@@ -7,34 +7,46 @@ sets the package parameters, then launches the pad editor.
 import os
 import sys
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor, QFont, QPalette
 from PyQt5.QtWidgets import (QApplication, QFileDialog, QLabel, QMainWindow,
-                             QScrollArea, QSizePolicy, QSpacerItem, QVBoxLayout,
-                             QWidget)
+                             QScrollArea, QSizePolicy, QSpacerItem,
+                             QStackedWidget, QVBoxLayout, QWidget)
 
 from data_handlers import ExcelHandler
 from ui import EditorWindow, FormatDescription, ProgressControl, UploadSection
 
 
 class ChipVisApp(QMainWindow):
+    """Single application window that switches between an upload page and the
+    editor page (so there is only ever one window on screen)."""
+
     def __init__(self):
         super().__init__()
         self.excel_handler = ExcelHandler()
         self.current_file = None
         self.progress_control = ProgressControl()
-        self.editor_window = None  # keep a reference so it isn't garbage collected
         self.init_ui()
 
     def init_ui(self):
         self.setWindowTitle("Chip Bonding Visualization")
         self.setGeometry(100, 100, 800, 600)
 
+        # One central stack: page 0 = upload, page 1 = editor.
+        self.stack = QStackedWidget()
+        self.setCentralWidget(self.stack)
+
+        self.stack.addWidget(self._build_upload_page())
+
+        self.editor_page = EditorWindow()
+        self.editor_page.back_requested.connect(self._show_upload_page)
+        self.stack.addWidget(self.editor_page)
+
+    def _build_upload_page(self) -> QWidget:
         # Scrollable container so the Start button stays reachable on short windows.
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QScrollArea.NoFrame)
-        self.setCentralWidget(scroll_area)
 
         central_widget = QWidget()
         scroll_area.setWidget(central_widget)
@@ -66,6 +78,10 @@ class ChipVisApp(QMainWindow):
 
         main_layout.addSpacerItem(
             QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
+        return scroll_area
+
+    def _show_upload_page(self):
+        self.stack.setCurrentIndex(0)
 
     def open_file_dialog(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -107,11 +123,11 @@ class ChipVisApp(QMainWindow):
 
         frame_params = self.upload_section.get_frame_parameters()
 
-        self.editor_window = EditorWindow()
-        self.editor_window.set_data(pads, frame_params,
-                                    source_file=self.current_file)
-        self.editor_window.showMaximized()
-        self.editor_window.view.fit_in_view()
+        self.editor_page.set_data(pads, frame_params,
+                                  source_file=self.current_file)
+        self.stack.setCurrentIndex(1)
+        # Fit once the editor page has taken its final size.
+        QTimer.singleShot(0, self.editor_page.view.fit_in_view)
 
 
 def main():

@@ -38,15 +38,15 @@ COLOR_PIN = QColor(20, 20, 20, 255)             # solid black (all lead frame pi
 COLOR_LF_WIRE = QColor(127, 140, 141)           # all lead-frame bond wires
 COLOR_RING_WIRE = QColor(41, 128, 185)          # all VSS-ring bond wires
 
-# Palette for LF pin groups; a pin keeps the same color as the pads bonded
-# to it (keyed by pin number, so LF.5 is always the same color).
+# Light palette for lead-frame pads (cycled by pin number). Deliberately
+# excludes blue so these light colors never clash with the dark blue VSS ring.
 LF_PALETTE = [
-    QColor(46, 204, 113, 220),   # green
-    QColor(52, 152, 219, 220),   # blue
-    QColor(230, 126, 34, 220),   # orange
-    QColor(155, 89, 182, 220),   # purple
-    QColor(241, 196, 15, 220),   # yellow
-    QColor(26, 188, 156, 220),   # teal
+    QColor(46, 204, 113, 230),   # green
+    QColor(241, 196, 15, 230),   # amber
+    QColor(230, 126, 34, 230),   # orange
+    QColor(155, 89, 182, 230),   # purple
+    QColor(72, 219, 191, 230),   # aqua
+    QColor(255, 105, 180, 230),  # pink
 ]
 
 
@@ -217,6 +217,13 @@ class ChipScene(QGraphicsScene):
         for item in self.wire_items.values():
             item.setVisible(visible)
 
+    def reset_view(self):
+        """Reset rotation / display mode / wire visibility to defaults (used
+        when a new file is loaded). Does not redraw on its own."""
+        self._die_rotation = 0
+        self._display_mode = 'soc'
+        self._wires_visible = True
+
     @property
     def die_rotation(self) -> int:
         return self._die_rotation
@@ -230,9 +237,13 @@ class ChipScene(QGraphicsScene):
             x_open, y_open = y_open, x_open  # size turns with the die
         return rx, ry, x_open, y_open
 
-    def pads_with_rotation_applied(self):
+    def pads_with_rotation_applied(self, renumber_by_position=False):
         """Clones of the current pads with the rotation baked into their
-        coordinates and sizes (used when exporting)."""
+        coordinates and sizes (used when exporting).
+
+        If renumber_by_position is True, each pad's number is replaced with its
+        position number (keeping any prefix, e.g. 'SOC.1' -> 'SOC.<pos>') and
+        the pads are returned sorted by that position."""
         result = []
         for pad in self.chip_layout.pads:
             rx, ry, x_open, y_open = self.rotated_geometry(pad)
@@ -241,8 +252,17 @@ class ChipScene(QGraphicsScene):
             clone.x_open, clone.y_open = x_open, y_open
             if pad.is_modified or self._die_rotation != 0:
                 clone.mark_as_modified()
-            result.append(clone)
-        return result
+
+            pos = self._position_numbers.get(pad.pad_id)
+            if renumber_by_position and pos is not None:
+                prefix = pad.pad_id.split('.')[0]
+                clone.pad_id = f"{prefix}.{pos}" if '.' in pad.pad_id else str(pos)
+                clone.mark_as_modified()
+            result.append((pos if pos is not None else 0, clone))
+
+        if renumber_by_position:
+            result.sort(key=lambda item: item[0])
+        return [clone for _, clone in result]
 
     # --- coordinate helpers ---------------------------------------------
 

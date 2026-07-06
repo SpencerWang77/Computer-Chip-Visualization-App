@@ -2,10 +2,11 @@ import os
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QDoubleValidator, QFont, QPalette
-from PyQt5.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout,
-                             QFrame, QHBoxLayout, QLabel, QLineEdit,
-                             QMessageBox, QPushButton, QScrollArea, QSplitter,
-                             QVBoxLayout, QWidget)
+from PyQt5.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
+                             QFileDialog, QFormLayout, QFrame, QHBoxLayout,
+                             QLabel, QLineEdit, QListWidget, QMenu, QMessageBox,
+                             QPushButton, QScrollArea, QSplitter, QVBoxLayout,
+                             QWidget, QWidgetAction)
 
 from data_handlers import ExcelExporter
 from ui.chip_visualization import ChipScene, ChipVisualizationView
@@ -59,6 +60,13 @@ class EditorWindow(QWidget):
         self.wires_checkbox.setChecked(True)
         self.wires_checkbox.toggled.connect(self._on_wires_toggled)
 
+        self.padnames_checkbox = QCheckBox("Show pad names")
+        self.padnames_checkbox.setChecked(False)
+        self.padnames_checkbox.toggled.connect(self._on_padnames_toggled)
+
+        # Die stacking priority (drag to reorder; higher = on top).
+        priority_btn = self._build_priority_control()
+
         # Choose what each pad displays.
         display_label = QLabel("Show on pad:")
         display_label.setStyleSheet("color: #2c3e50; font-weight: bold;")
@@ -75,6 +83,8 @@ class EditorWindow(QWidget):
         header_layout.addWidget(title_label)
         header_layout.addStretch()
         header_layout.addWidget(self.wires_checkbox)
+        header_layout.addWidget(self.padnames_checkbox)
+        header_layout.addWidget(priority_btn)
         header_layout.addSpacing(8)
         header_layout.addWidget(display_label)
         header_layout.addWidget(self.display_combo)
@@ -211,6 +221,8 @@ class EditorWindow(QWidget):
             "Lead frame pins are drawn solid black and labeled LF.<n>.\n"
             "The ring and pins are fixed; each die moves/rotates on its own\n"
             "(click a die to select it). Dies start arranged side by side.\n"
+            "\"Show pad names\" labels each pad; \"Priority\" sets which die is\n"
+            "drawn on top when dies overlap (drag to reorder).\n"
             "Ring (0,0): the axes at the ring's bottom-left corner are the\n"
             "origin of the shared ring coordinate system (shown per pad).\n"
             "\n"
@@ -265,6 +277,38 @@ class EditorWindow(QWidget):
         self.scene.die_selected.connect(self._on_scene_die_selected)
         self._apply_style()
 
+    def _build_priority_control(self):
+        """A 'Priority' button opening a drag-reorderable list of dies; the
+        top item is drawn on top of overlapping dies."""
+        self.priority_list = QListWidget()
+        self.priority_list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.priority_list.setToolTip("Drag to reorder — top die is drawn on top")
+        self.priority_list.setFixedWidth(150)
+        self.priority_list.model().rowsMoved.connect(self._on_priority_reordered)
+
+        container = QWidget()
+        box = QVBoxLayout(container)
+        box.setContentsMargins(8, 8, 8, 8)
+        box.setSpacing(4)
+        hint = QLabel("Die priority (drag to reorder;\ntop = drawn on top):")
+        hint.setStyleSheet("color: #2c3e50; font-size: 11px;")
+        box.addWidget(hint)
+        box.addWidget(self.priority_list)
+
+        menu = QMenu(self)
+        action = QWidgetAction(menu)
+        action.setDefaultWidget(container)
+        menu.addAction(action)
+
+        btn = QPushButton("Priority ▾")
+        btn.setToolTip("Set which die is drawn on top when dies overlap")
+        btn.setStyleSheet(
+            "QPushButton { background-color: #ecf0f1; color: #2c3e50;"
+            " border: 1px solid #bdc3c7; border-radius: 4px; padding: 4px 10px; }"
+            "QPushButton:hover { background-color: #dfe4ea; }")
+        btn.setMenu(menu)
+        return btn
+
     # --- data -----------------------------------------------------------
 
     def set_data(self, dies, frame_params=None, source_file=None):
@@ -274,15 +318,18 @@ class EditorWindow(QWidget):
 
         # Reset view options for a fresh file (without triggering redraws).
         self.scene.reset_view()
-        controls = (self.display_combo, self.wires_checkbox, self.renumber_checkbox,
-                    self.die_combo)
+        controls = (self.display_combo, self.wires_checkbox, self.padnames_checkbox,
+                    self.renumber_checkbox, self.die_combo, self.priority_list)
         for widget in controls:
             widget.blockSignals(True)
         self.display_combo.setCurrentIndex(0)
         self.wires_checkbox.setChecked(True)
+        self.padnames_checkbox.setChecked(False)
         self.renumber_checkbox.setChecked(False)
         self.die_combo.clear()
         self.die_combo.addItems([d.name for d in dies])
+        self.priority_list.clear()
+        self.priority_list.addItems([d.name for d in dies])
         for widget in controls:
             widget.blockSignals(False)
         self.editor.clear()
@@ -305,6 +352,14 @@ class EditorWindow(QWidget):
 
     def _on_wires_toggled(self, checked):
         self.scene.set_wires_visible(checked)
+
+    def _on_padnames_toggled(self, checked):
+        self.scene.set_pad_names_visible(checked)
+
+    def _on_priority_reordered(self, *args):
+        order = [self.priority_list.item(i).text()
+                 for i in range(self.priority_list.count())]
+        self.scene.set_die_priority(order)
 
     def _on_pad_selected(self, pad):
         self.editor.load_pad(pad, self.scene.die_name_of(pad),
@@ -399,11 +454,11 @@ class EditorWindow(QWidget):
             if not output_path:
                 return
 
-            # One combined sheet of every die's pads, with each die's current
+            # One 'Die Netlist(<name>)' tab per die, with each die's current
             # move/rotation baked into ring coordinates.
             export_rows = self.scene.pads_for_export(
                 renumber_by_position=self.renumber_checkbox.isChecked())
-            success, saved_path = exporter.export_combined(export_rows, output_path)
+            success, saved_path = exporter.export_by_die(export_rows, output_path)
             if not success:
                 QMessageBox.warning(self, "Export Failed", "Could not export the Excel file.")
                 return

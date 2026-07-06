@@ -17,8 +17,10 @@ python main.py
 ## Usage
 
 1. Select an Excel bonding file. Die sizes and pin count are read from the
-   file; only the **VSS ring size** is optional (outer side of the square
-   ring — leave empty for a default large enough to move all dies around).
+   file. Optionally override the **lead frame pins** as *per top/bottom edge ×
+   per left/right edge* (a rectangular package can differ), and the **VSS ring
+   size** as *width × height* µm. Leave a field empty for a square / spacious
+   default large enough to move all dies around.
 2. Click **Start Visualization** to open the editor (one window; use
    **← Back to Upload** to return):
    - Each **die** (with numbered pads) sits inside a fixed square **VSS ring**,
@@ -35,7 +37,8 @@ python main.py
      side panel.
    - **Bond wires**: gray = to a lead frame pin, blue = to the VSS ring,
      purple = die-to-die (pad → pad on another die). Toggle with "Show bond
-     wires".
+     wires". **Show pad names** labels each pad beside it; **Priority** (drag
+     to reorder the dies) sets which die is drawn on top when dies overlap.
    - Click a pad to edit its name, net name or bonding target; saving
      updates the drawing immediately. **Revert** restores the original
      bonding value.

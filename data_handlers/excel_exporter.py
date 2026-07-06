@@ -12,14 +12,19 @@ class ExcelExporter:
     in the shared ring coordinate system (origin at the ring's bottom-left).
     """
 
+    HEADERS = ["Die Pad No", "Pad name", "X-coord", "Y-coord",
+               "X open", "Y open", "Net Name", "Bonding"]
+    UNITS = ["", "", "(ring frame)", "(ring frame)",
+             "(after rotation)", "(after rotation)", "", "relationship"]
+
     def __init__(self, source_file=None):
         self.source_file = source_file
 
-    def export_combined(self, rows, output_path):
-        """Export a combined sheet of all pads across every die.
+    def export_by_die(self, rows, output_path):
+        """Export one 'Die Netlist(<name>)' tab per die (mirroring the input).
 
-        `rows` is a list of (die_name, Pad) with coordinates already in the
-        ring frame. Returns (success, saved_path).
+        `rows` is a list of (die_name, Pad) with coordinates already baked into
+        the shared ring frame. Returns (success, saved_path).
         """
         try:
             if not output_path:
@@ -28,29 +33,28 @@ class ExcelExporter:
             if output_dir:
                 os.makedirs(output_dir, exist_ok=True)
 
+            # Group pads by die, preserving first-seen die order.
+            by_die = {}
+            for die_name, pad in rows:
+                by_die.setdefault(die_name, []).append(pad)
+
             workbook = openpyxl.Workbook()
-            sheet = workbook.active
-            sheet.title = "All Pads"
-
-            headers = ["Die", "Die Pad No", "Pad name", "X-coord (ring)",
-                       "Y-coord (ring)", "X open", "Y open", "Net Name", "Bonding"]
-            units = ["", "", "", "(ring frame)", "(ring frame)",
-                     "(after rotation)", "(after rotation)", "", "relationship"]
-            for col, value in enumerate(headers, 1):
-                sheet.cell(row=1, column=col, value=value)
-            for col, value in enumerate(units, 1):
-                sheet.cell(row=2, column=col, value=value)
-
-            for row_idx, (die_name, pad) in enumerate(rows, 3):
-                sheet.cell(row=row_idx, column=1, value=die_name)
-                sheet.cell(row=row_idx, column=2, value=pad.pad_id)
-                sheet.cell(row=row_idx, column=3, value=pad.pad_name)
-                sheet.cell(row=row_idx, column=4, value=pad.x_coord)
-                sheet.cell(row=row_idx, column=5, value=pad.y_coord)
-                sheet.cell(row=row_idx, column=6, value=pad.x_open)
-                sheet.cell(row=row_idx, column=7, value=pad.y_open)
-                sheet.cell(row=row_idx, column=8, value=pad.net_name)
-                sheet.cell(row=row_idx, column=9, value=pad.bonding)
+            workbook.remove(workbook.active)  # drop the default empty sheet
+            for die_name, pads in by_die.items():
+                sheet = workbook.create_sheet(title=self._sheet_title(die_name))
+                for col, value in enumerate(self.HEADERS, 1):
+                    sheet.cell(row=1, column=col, value=value)
+                for col, value in enumerate(self.UNITS, 1):
+                    sheet.cell(row=2, column=col, value=value)
+                for row_idx, pad in enumerate(pads, 3):
+                    sheet.cell(row=row_idx, column=1, value=pad.pad_id)
+                    sheet.cell(row=row_idx, column=2, value=pad.pad_name)
+                    sheet.cell(row=row_idx, column=3, value=pad.x_coord)
+                    sheet.cell(row=row_idx, column=4, value=pad.y_coord)
+                    sheet.cell(row=row_idx, column=5, value=pad.x_open)
+                    sheet.cell(row=row_idx, column=6, value=pad.y_open)
+                    sheet.cell(row=row_idx, column=7, value=pad.net_name)
+                    sheet.cell(row=row_idx, column=8, value=pad.bonding)
 
             workbook.save(output_path)
             return True, output_path
@@ -58,6 +62,11 @@ class ExcelExporter:
         except Exception as e:
             print(f"Excel export failed: {e}")
             return False, None
+
+    @staticmethod
+    def _sheet_title(die_name):
+        # Excel sheet titles are capped at 31 chars.
+        return f"Die Netlist({die_name})"[:31]
 
     def get_export_summary(self, pads):
         return {

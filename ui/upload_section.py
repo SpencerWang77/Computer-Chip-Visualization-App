@@ -1,7 +1,7 @@
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QDoubleValidator, QIntValidator
-from PyQt5.QtWidgets import (QFormLayout, QGroupBox, QLabel, QLineEdit,
-                             QPushButton, QVBoxLayout)
+from PyQt5.QtWidgets import (QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+                             QLineEdit, QPushButton, QVBoxLayout, QWidget)
 
 
 class UploadSection(QGroupBox):
@@ -126,24 +126,34 @@ class UploadSection(QGroupBox):
             }
         """
 
-        # Die sizes are read per-die from the file; only these two are optional.
-        self.pin_count_input = QLineEdit()
-        self.pin_count_input.setPlaceholderText("auto-detected from the file")
-        self.pin_count_input.setValidator(QIntValidator(4, 1000))
-        self.pin_count_input.setStyleSheet(input_style)
-        form_layout.addRow("Lead frame pin count:", self.pin_count_input)
+        # Die sizes are read per-die from the file; these are optional.
+        # Lead frame pins: (per horizontal edge) × (per vertical edge).
+        self.pin_x_input = QLineEdit()
+        self.pin_x_input.setValidator(QIntValidator(1, 1000))
+        self.pin_x_input.setStyleSheet(input_style)
+        self.pin_y_input = QLineEdit()
+        self.pin_y_input.setValidator(QIntValidator(1, 1000))
+        self.pin_y_input.setStyleSheet(input_style)
+        form_layout.addRow("Pins per edge (top/bot × left/right):",
+                           self._pair_row(self.pin_x_input, self.pin_y_input))
 
-        self.ring_size_input = QLineEdit()
-        self.ring_size_input.setPlaceholderText("auto: spacious default")
-        self.ring_size_input.setValidator(QDoubleValidator(1.0, 1000000.0, 2))
-        self.ring_size_input.setStyleSheet(input_style)
-        form_layout.addRow("VSS ring size (µm):", self.ring_size_input)
+        # VSS ring outer size: width × height (µm).
+        self.ring_w_input = QLineEdit()
+        self.ring_w_input.setPlaceholderText("auto")
+        self.ring_w_input.setValidator(QDoubleValidator(1.0, 1000000.0, 2))
+        self.ring_w_input.setStyleSheet(input_style)
+        self.ring_h_input = QLineEdit()
+        self.ring_h_input.setPlaceholderText("auto")
+        self.ring_h_input.setValidator(QDoubleValidator(1.0, 1000000.0, 2))
+        self.ring_h_input.setStyleSheet(input_style)
+        form_layout.addRow("VSS ring size W × H (µm):",
+                           self._pair_row(self.ring_w_input, self.ring_h_input))
 
-        info_label = QLabel("* Die sizes are read from each 'Die Netlist' tab\n"
-                            "  (and 'Basic information'); no need to enter them.\n"
-                            "* Pin count auto-fills from the file; ring size is\n"
-                            "  the square ring's outer side (leave empty for a\n"
-                            "  default large enough to move all dies).")
+        info_label = QLabel("* Die sizes are read from the file; no need to enter.\n"
+                            "* Pins per edge: first = each of top/bottom, second =\n"
+                            "  each of left/right (a rectangular package can differ).\n"
+                            "* Ring size is the outer W × H. Leave a field empty for\n"
+                            "  a square / spacious default large enough to move dies.")
         info_label.setStyleSheet("""
             QLabel {
                 color: #7f8c8d;
@@ -156,18 +166,55 @@ class UploadSection(QGroupBox):
 
         parent_layout.addLayout(form_layout)
 
+    @staticmethod
+    def _pair_row(field_a, field_b):
+        """A horizontal 'a × b' row of two inputs."""
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.setContentsMargins(0, 0, 0, 0)
+        times = QLabel("×")
+        times.setStyleSheet("color: #7f8c8d; font-weight: bold;")
+        row.addWidget(field_a)
+        row.addWidget(times)
+        row.addWidget(field_b)
+        container = QWidget()
+        container.setLayout(row)
+        return container
+
     def set_pin_count(self, pin_count: int):
-        """Pre-fill the pin count (auto-detected from the loaded file)."""
-        if pin_count > 0:
-            self.pin_count_input.setText(str(pin_count))
+        """Pre-fill the per-edge pin counts (square) from the auto-detected
+        total (e.g. 120 -> 30 × 30)."""
+        if pin_count and pin_count >= 4:
+            per_edge = round(pin_count / 4)
+            self.pin_x_input.setText(str(per_edge))
+            self.pin_y_input.setText(str(per_edge))
 
     def get_frame_parameters(self):
         try:
-            pin_count = int(self.pin_count_input.text()) if self.pin_count_input.text() else None
-            ring_size = float(self.ring_size_input.text()) if self.ring_size_input.text() else None
+            def num(widget, cast):
+                text = widget.text().strip()
+                return cast(text) if text else None
+
+            pin_x = num(self.pin_x_input, int)
+            pin_y = num(self.pin_y_input, int)
+            # Default to square if only one side is given.
+            if pin_x is None and pin_y is not None:
+                pin_x = pin_y
+            if pin_y is None and pin_x is not None:
+                pin_y = pin_x
+
+            ring_w = num(self.ring_w_input, float)
+            ring_h = num(self.ring_h_input, float)
+            if ring_w is None and ring_h is not None:
+                ring_w = ring_h
+            if ring_h is None and ring_w is not None:
+                ring_h = ring_w
+
             return {
-                'pin_count': pin_count,
-                'ring_size': ring_size,
+                'pin_x': pin_x,
+                'pin_y': pin_y,
+                'ring_w': ring_w,
+                'ring_h': ring_h,
             }
         except ValueError:
             return None

@@ -290,6 +290,11 @@ class ChipScene(QGraphicsScene):
         self._position_numbers = {}
         self._selected_die = None
         self._building = False
+        self._preserved_transforms = None  # set by refresh() to survive a redraw
+        self._preserved_selected = None
+        self._pad_names_visible = False
+        self.pad_name_items = {}     # pad_id -> QGraphicsTextItem (name beside pad)
+        self._die_priority = None    # list of die names, highest priority first
         self.pad_clicked.connect(self._on_pad_clicked)
 
     # --- public API ---------------------------------------------------
@@ -300,6 +305,13 @@ class ChipScene(QGraphicsScene):
         self._redraw()
 
     def refresh(self):
+        """Redraw (e.g. after a pad edit) while keeping each die's current
+        position/rotation and the current selection."""
+        self._preserved_transforms = {
+            self.dies[i].name: (st['offset'], st['rotation'])
+            for i, st in enumerate(self._states)
+        }
+        self._preserved_selected = self._selected_die
         self._redraw()
 
     def die_names(self):
@@ -358,10 +370,42 @@ class ChipScene(QGraphicsScene):
         for item in self.wire_items.values():
             item.setVisible(visible)
 
+    def set_pad_names_visible(self, visible: bool):
+        self._pad_names_visible = visible
+        for item in self.pad_name_items.values():
+            item.setVisible(visible)
+
+    def set_die_priority(self, order):
+        """Set die stacking priority. `order` is a list of die names, highest
+        priority first; higher-priority dies are drawn on top of overlaps."""
+        self._die_priority = list(order)
+        self._apply_die_priority()
+
+    def die_priority(self):
+        """Current priority order (die names, highest first)."""
+        if self._die_priority:
+            names = self.die_names()
+            return [n for n in self._die_priority if n in names]
+        return self.die_names()
+
+    def _apply_die_priority(self):
+        order = self.die_priority()
+        n = len(order)
+        name_to_idx = {d.name: i for i, d in enumerate(self.dies)}
+        for rank, name in enumerate(order):
+            idx = name_to_idx.get(name)
+            if idx is None:
+                continue
+            group = self._states[idx]['group']
+            if group is not None:
+                group.setZValue(6 + (n - 1 - rank))  # first = highest z
+
     def reset_view(self):
         self._display_mode = 'soc'
         self._wires_visible = True
+        self._pad_names_visible = False
         self._selected_die = None
+        self._die_priority = None
 
     # --- ring coordinate helpers -----------------------------------------
 
@@ -438,6 +482,7 @@ class ChipScene(QGraphicsScene):
         self.clear()
         self.pad_items = {}
         self.pad_die = {}
+        self.pad_name_items = {}
         self.wire_items = {}
         self._wire_targets = {}
         self._wire_by_pad = {}
@@ -452,10 +497,12 @@ class ChipScene(QGraphicsScene):
             return
 
         self._arrange_dies()
-        ring_side = self._ring_side()
-        self._draw_vss_ring(ring_side)
-        self._draw_lead_frame_pins(self._pin_reference_square(ring_side),
-                                   self._compute_pin_count())
+        self._restore_preserved_transforms()
+        ring_w, ring_h = self._ring_size()
+        self._draw_vss_ring(ring_w, ring_h)
+        pin_x, pin_y = self._compute_pin_counts()
+        self._draw_lead_frame_pins(self._pin_reference_rect(ring_w, ring_h),
+                                   pin_x, pin_y)
         self._position_numbers = self._compute_position_numbers()
 
         for idx in range(len(self.dies)):
@@ -463,6 +510,7 @@ class ChipScene(QGraphicsScene):
             self._apply_die_transform(idx)
         self._counter_rotate_labels()
         self._draw_bond_wires()
+        self._apply_die_priority()
 
         if self._selected_die is None or self._selected_die >= len(self.dies):
             self._selected_die = 0
@@ -479,6 +527,8 @@ class ChipScene(QGraphicsScene):
         heights = [d.height for d in self.dies]
         gap = max(widths) * 0.15
         total_w = sum(widths) + gap * (len(self.dies) - 1)
+        self._arranged_w = total_w
+        self._arranged_h = max(heights)
         self._arranged_extent = max(total_w, max(heights))
 
         x = -total_w / 2
@@ -494,28 +544,56 @@ class ChipScene(QGraphicsScene):
             })
             x += w + gap
 
-    def _ring_side(self):
+    def _restore_preserved_transforms(self):
+        """Re-apply die placements saved by refresh() (by die name), so a
+        redraw after editing a pad does not reset the dies."""
+        preserved = getattr(self, '_preserved_transforms', None)
+        if not preserved:
+            return
+        for i, die in enumerate(self.dies):
+            if die.name in preserved:
+                offset, rotation = preserved[die.name]
+                self._states[i]['offset'] = offset
+                self._states[i]['rotation'] = rotation
+        selected = getattr(self, '_preserved_selected', None)
+        if selected is not None and 0 <= selected < len(self.dies):
+            self._selected_die = selected
+        self._preserved_transforms = None
+        self._preserved_selected = None
+
+    def _ring_size(self):
+        """Outer (width, height) of the VSS ring. User values (rectangle) are
+        honored but never smaller than the arranged dies; otherwise a square
+        default large enough to move the dies around."""
         params = self._frame_params or {}
-        user = params.get('ring_size')
         default = self._arranged_extent * RING_DEFAULT_FACTOR
-        if user and user > 0:
-            return max(float(user), self._arranged_extent * 1.1)
-        return default
+        w = params.get('ring_w')
+        h = params.get('ring_h')
+        if w and w > 0 and h and h > 0:
+            return (max(float(w), self._arranged_w * 1.1),
+                    max(float(h), self._arranged_h * 1.1))
+        return default, default
 
-    def _pin_reference_square(self, ring_side):
-        side = ring_side * 1.12
-        return QRectF(-side / 2, -side / 2, side, side)
+    def _pin_reference_rect(self, ring_w, ring_h):
+        w, h = ring_w * 1.12, ring_h * 1.12
+        return QRectF(-w / 2, -h / 2, w, h)
 
-    def _compute_pin_count(self):
+    def _compute_pin_counts(self):
+        """(pins per horizontal edge, pins per vertical edge). User values are
+        honored; otherwise a square split of the auto-detected total."""
         params = self._frame_params or {}
-        if params.get('pin_count'):
-            return int(params['pin_count'])
+        pin_x = params.get('pin_x')
+        pin_y = params.get('pin_y')
+        if pin_x and pin_y:
+            return int(pin_x), int(pin_y)
         max_pin = 0
         for pad in (p for d in self.dies for p in d.pads):
             kind, detail = classify_bonding(pad.bonding)
             if kind == 'lf':
                 max_pin = max(max_pin, detail)
-        return ((max_pin + 3) // 4) * 4 if max_pin else 0
+        total = ((max_pin + 3) // 4) * 4 if max_pin else 0
+        per_edge = round(total / 4)
+        return per_edge, per_edge
 
     def _die_base_scene(self, idx, x, y):
         """Die-local point -> base (unmoved) scene point for die idx."""
@@ -544,6 +622,9 @@ class ChipScene(QGraphicsScene):
         label.setDefaultTextColor(QColor(170, 178, 185))
         b = label.boundingRect()
         label.setPos(arranged.x() - b.width() / 2, arranged.y() - b.height() / 2)
+        # Keep the name upright when the die rotates (counter-rotate about its center).
+        label.setTransformOriginPoint(b.center())
+        st['name_label'] = label
 
         handle_r = max(die.width, die.height) * 0.04
         st['handle'] = DieRotationHandle(
@@ -560,10 +641,49 @@ class ChipScene(QGraphicsScene):
             item.text_item.setParentItem(group)
             self.pad_items[pad.pad_id] = item
             self.pad_die[pad.pad_id] = idx
+            self._make_pad_name_label(idx, pad, prect, group)
 
-    def _draw_vss_ring(self, side):
+    def _make_pad_name_label(self, idx, pad, prect, group):
+        """A small, light pad-name label placed just outside the pad, oriented
+        radially (perpendicular to the die edge the pad sits on)."""
+        name = (pad.pad_name or "").strip()
+        if not name:
+            return
+        arranged = self._states[idx]['arranged']
+        c = prect.center()
+        dx, dy = c.x() - arranged.x(), c.y() - arranged.y()
+        horizontal = abs(dx) >= abs(dy)
+
+        label = QGraphicsTextItem(name, group)
+        font_size = max(1, int(min(prect.width(), prect.height()) * 0.5))
+        label.setFont(QFont("Arial", font_size))
+        label.setDefaultTextColor(QColor(120, 128, 135, 200))  # small & light
+        b = label.boundingRect()
+        gap = min(prect.width(), prect.height()) * 0.3
+
+        if horizontal:
+            if dx < 0:   # left edge: text to the left of the pad
+                label.setPos(prect.left() - gap - b.width(), c.y() - b.height() / 2)
+            else:        # right edge
+                label.setPos(prect.right() + gap, c.y() - b.height() / 2)
+        else:
+            # top/bottom edges: rotate so the name runs outward
+            label.setTransformOriginPoint(b.width() / 2, b.height() / 2)
+            label.setRotation(-90)
+            if dy < 0:   # top edge (smaller scene y): above the pad
+                cy = prect.top() - gap - b.width() / 2
+            else:        # bottom edge
+                cy = prect.bottom() + gap + b.width() / 2
+            label.setPos(c.x() - b.width() / 2, cy - b.height() / 2)
+
+        label.setZValue(20)
+        label.setVisible(self._pad_names_visible)
+        self.pad_name_items[pad.pad_id] = label
+
+    def _draw_vss_ring(self, width, height):
+        side = min(width, height)   # thickness/labels scale with the smaller side
         thickness = side * RING_THICKNESS_FACTOR
-        outer = QRectF(-side / 2, -side / 2, side, side)
+        outer = QRectF(-width / 2, -height / 2, width, height)
         inner = outer.adjusted(thickness, thickness, -thickness, -thickness)
         self.ring_outer = outer
         self.ring_centerline = outer.adjusted(thickness / 2, thickness / 2,
@@ -629,20 +749,19 @@ class ChipScene(QGraphicsScene):
             t.setZValue(-13)
             self.addItem(t)
 
-    def _draw_lead_frame_pins(self, ref_square, pin_count):
-        if pin_count < 4:
+    def _draw_lead_frame_pins(self, ref_rect, pin_x, pin_y):
+        """pin_x = pins on each of the top/bottom edges, pin_y = pins on each
+        of the left/right edges (the package may be rectangular)."""
+        if pin_x < 1 and pin_y < 1:
             return
-        scale = ref_square.width()
+        scale = min(ref_rect.width(), ref_rect.height())
         pin_gap = scale * 0.04
         pin_len = scale * 0.09
         corner_clear = scale * 0.04
-        pkg = ref_square.adjusted(-pin_gap, -pin_gap, pin_gap, pin_gap)
+        pkg = ref_rect.adjusted(-pin_gap, -pin_gap, pin_gap, pin_gap)
 
         order = ['left', 'bottom', 'right', 'top']
-        per_side = pin_count // 4
-        remainder = pin_count % 4
-        counts = {side: per_side + (1 if i < remainder else 0)
-                  for i, side in enumerate(order)}
+        counts = {'left': pin_y, 'right': pin_y, 'top': pin_x, 'bottom': pin_x}
 
         pin_number = 1
         for side in order:
@@ -801,6 +920,9 @@ class ChipScene(QGraphicsScene):
         indices = [idx] if idx is not None else range(len(self.dies))
         for i in indices:
             rot = self._states[i]['rotation']
+            name_label = self._states[i].get('name_label')
+            if name_label is not None:
+                name_label.setRotation(rot)  # keep the die name upright
             for pad in self.dies[i].pads:
                 item = self.pad_items.get(pad.pad_id)
                 if item is not None:

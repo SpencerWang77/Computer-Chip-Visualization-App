@@ -43,6 +43,11 @@ class PadEditor(QWidget):
         self.ring_coord_label.setStyleSheet("color: #16a085;")
         layout.addWidget(self.ring_coord_label)
 
+        # Wrap the info labels so long values don't force the panel wider.
+        for lbl in (self.coord_label, self.size_label, self.rot_coord_label,
+                    self.rot_size_label, self.ring_coord_label):
+            lbl.setWordWrap(True)
+
         # Editable fields
         edit_style = "border: 2px solid #bdc3c7; border-radius: 4px; padding: 5px;"
 
@@ -58,7 +63,7 @@ class PadEditor(QWidget):
 
         # Bonding label with a Revert button on the right of the same line.
         bonding_header = QHBoxLayout()
-        bonding_header.addWidget(QLabel("Bonding (e.g. LF.12, VSS_ring, Not Bond):"))
+        bonding_header.addWidget(QLabel("Bonding:"))
         bonding_header.addStretch()
         self.revert_btn = QPushButton("Revert")
         self.revert_btn.setToolTip("Restore this pad's original bonding type")
@@ -68,6 +73,7 @@ class PadEditor(QWidget):
         layout.addLayout(bonding_header)
 
         self.bonding_edit = QLineEdit()
+        self.bonding_edit.setPlaceholderText("e.g. LF.12, VSS_ring, Not Bond")
         self.bonding_edit.setStyleSheet(edit_style)
         layout.addWidget(self.bonding_edit)
 

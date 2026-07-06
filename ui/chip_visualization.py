@@ -50,6 +50,10 @@ COLOR_RING_WIRE = QColor(41, 128, 185)          # all VSS-ring bond wires
 RING_THICKNESS_FACTOR = 0.04
 RING_DEFAULT_FACTOR = 1.35
 
+# Bond wires draw above everything else (die, pads, pins) so they are never
+# hidden by the die rectangle.
+WIRE_Z = 50
+
 # Light palette for lead-frame pads (cycled by pin number). Deliberately
 # excludes blue so these light colors never clash with the dark blue VSS ring.
 LF_PALETTE = [
@@ -237,7 +241,7 @@ class DieGroupItem(QGraphicsRectItem):
         self.setTransformOriginPoint(rect.center())
         self.setPen(QPen(QColor(127, 140, 141), rect.width() * 0.003))
         self.setBrush(QBrush(QColor(236, 240, 241)))
-        # Above the wires so they appear to emerge from under the die.
+        # Above the ring/pins; the bond wires (WIRE_Z) draw above the die.
         self.setZValue(6)
 
     def itemChange(self, change, value):
@@ -785,7 +789,8 @@ class ChipScene(QGraphicsScene):
             pen = QPen(QColor(color.red(), color.green(), color.blue(), 130), 1.2)
             pen.setCosmetic(True)  # constant width at any zoom level
             wire.setPen(pen)
-            wire.setZValue(5)
+            wire.setZValue(WIRE_Z)  # above the die so wires are never hidden
+            wire.setAcceptedMouseButtons(Qt.NoButton)  # let clicks reach the pads
             wire.setVisible(self._wires_visible)
             self.addItem(wire)
             self.wire_items[pad.pad_id] = wire
@@ -869,6 +874,7 @@ class ChipScene(QGraphicsScene):
             pen.setColor(color)
             pen.setWidthF(1.2)
             self._highlighted_wire.setPen(pen)
+            self._highlighted_wire.setZValue(WIRE_Z)
             self._highlighted_wire = None
 
         wire = self.wire_items.get(pad_id)
@@ -879,6 +885,7 @@ class ChipScene(QGraphicsScene):
             pen.setColor(color)
             pen.setWidthF(3.0)
             wire.setPen(pen)
+            wire.setZValue(WIRE_Z + 1)  # highlighted wire above the others
             wire.setVisible(True)  # show even when wires are toggled off
             self._highlighted_wire = wire
 

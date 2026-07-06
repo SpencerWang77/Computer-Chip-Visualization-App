@@ -107,10 +107,28 @@ class EditorWindow(QWidget):
         edit_layout.addWidget(self._divider())
 
         # Die placement: numeric alternative to dragging / handle rotation.
+        place_header = QHBoxLayout()
         place_title = QLabel("Die placement")
         place_title.setFont(QFont("Arial", 12, QFont.Bold))
         place_title.setStyleSheet("color: #2c3e50;")
-        edit_layout.addWidget(place_title)
+        place_header.addWidget(place_title)
+        place_header.addStretch()
+
+        small_rot_style = (
+            "QPushButton { background-color: #3498db; color: white; border: none;"
+            " border-radius: 4px; padding: 2px 8px; font-weight: bold; font-size: 12px; }"
+            "QPushButton:hover { background-color: #2980b9; }")
+        rot_ccw_btn = QPushButton("↺ 90°")
+        rot_ccw_btn.setToolTip("Rotate the die 90° counterclockwise")
+        rot_ccw_btn.setStyleSheet(small_rot_style)
+        rot_ccw_btn.clicked.connect(lambda: self._rotate_die(90))
+        rot_cw_btn = QPushButton("↻ 90°")
+        rot_cw_btn.setToolTip("Rotate the die 90° clockwise")
+        rot_cw_btn.setStyleSheet(small_rot_style)
+        rot_cw_btn.clicked.connect(lambda: self._rotate_die(-90))
+        place_header.addWidget(rot_ccw_btn)
+        place_header.addWidget(rot_cw_btn)
+        edit_layout.addLayout(place_header)
 
         field_style = "border: 1px solid #bdc3c7; border-radius: 4px; padding: 5px;"
         place_form = QFormLayout()
@@ -271,6 +289,11 @@ class EditorWindow(QWidget):
     def _on_pad_selected(self, pad):
         self.editor.load_pad(pad, self.scene.rotated_geometry(pad),
                              self.scene.ring_coords(pad))
+
+    def _rotate_die(self, degrees):
+        """Rotate the die 90° from the small buttons (keeps its position)."""
+        self.scene.rotate_die(degrees)
+        self._restore_selection()
 
     def _apply_die_placement(self):
         """Numeric alternative to hand drag/rotation."""

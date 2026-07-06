@@ -19,33 +19,29 @@ class PadEditor(QWidget):
         layout.setSpacing(10)
 
         # Read-only fields
-        self.pad_id_label = QLabel("Pad ID: -")
+        self.pad_id_label = QLabel("Pad: -")
         self.pad_id_label.setStyleSheet("font-weight: bold; color: #2c3e50;")
         layout.addWidget(self.pad_id_label)
 
-        self.coord_label = QLabel("Coordinates: -")
+        self.coord_label = QLabel("Die coords: -")
         layout.addWidget(self.coord_label)
 
         self.size_label = QLabel("Size: -")
         layout.addWidget(self.size_label)
 
-        # After-move/rotation geometry (matches what is exported)
-        self.rot_coord_label = QLabel("After move/rotate — coords: -")
-        self.rot_coord_label.setStyleSheet("color: #2980b9;")
-        layout.addWidget(self.rot_coord_label)
-
-        self.rot_size_label = QLabel("After move/rotate — size: -")
-        self.rot_size_label.setStyleSheet("color: #2980b9;")
-        layout.addWidget(self.rot_size_label)
-
-        # Position in the ring coordinate system (origin: ring bottom-left)
-        self.ring_coord_label = QLabel("Ring coords: -")
+        # Position in the ring coordinate system (origin: ring bottom-left);
+        # this is the shared frame and what gets exported.
+        self.ring_coord_label = QLabel("Ring position: -")
         self.ring_coord_label.setStyleSheet("color: #16a085;")
         layout.addWidget(self.ring_coord_label)
 
+        self.rot_size_label = QLabel("Size after rotation: -")
+        self.rot_size_label.setStyleSheet("color: #2980b9;")
+        layout.addWidget(self.rot_size_label)
+
         # Wrap the info labels so long values don't force the panel wider.
-        for lbl in (self.coord_label, self.size_label, self.rot_coord_label,
-                    self.rot_size_label, self.ring_coord_label):
+        for lbl in (self.coord_label, self.size_label,
+                    self.ring_coord_label, self.rot_size_label):
             lbl.setWordWrap(True)
 
         # Editable fields
@@ -92,8 +88,8 @@ class PadEditor(QWidget):
         """Reset the panel (used when a new file is loaded)."""
         self.current_pad = None
         self.original_data = {}
-        self.pad_id_label.setText("Pad ID: -")
-        self.coord_label.setText("Coordinates: -")
+        self.pad_id_label.setText("Pad: -")
+        self.coord_label.setText("Die coords: -")
         self.size_label.setText("Size: -")
         self.update_rotated(None)
         self.update_ring_coords(None)
@@ -101,7 +97,7 @@ class PadEditor(QWidget):
         self.net_edit.clear()
         self.bonding_edit.clear()
 
-    def load_pad(self, pad, rotated=None, ring=None):
+    def load_pad(self, pad, die_name=None, ring=None, rotated=None):
         self.current_pad = pad
         self.original_data = {
             'pad_name': pad.pad_name,
@@ -109,35 +105,34 @@ class PadEditor(QWidget):
             'bonding': pad.bonding,
         }
 
-        self.pad_id_label.setText(f"Pad ID: {pad.pad_id}")
-        self.coord_label.setText(f"Coordinates: ({pad.x_coord:.4f}, {pad.y_coord:.4f}) µm")
+        die_suffix = f"   (die {die_name})" if die_name else ""
+        self.pad_id_label.setText(f"Pad: {pad.pad_id}{die_suffix}")
+        self.coord_label.setText(f"Die coords: ({pad.x_coord:.4f}, {pad.y_coord:.4f}) µm")
         self.size_label.setText(f"Size: {pad.x_open:.2f} × {pad.y_open:.2f} µm")
-        self.update_rotated(rotated)
         self.update_ring_coords(ring)
+        self.update_rotated(rotated)
 
         self.name_edit.setText(pad.pad_name)
         self.net_edit.setText(pad.net_name)
         self.bonding_edit.setText(pad.bonding)
 
     def update_rotated(self, rotated):
-        """Refresh the after-move/rotation coordinate/size lines. `rotated` is
-        (x, y, x_open, y_open), or None to blank them."""
+        """Refresh the 'size after rotation' line. `rotated` is
+        (ring_x, ring_y, x_open, y_open), or None to blank it."""
         if rotated is None:
-            self.rot_coord_label.setText("After move/rotate — coords: -")
-            self.rot_size_label.setText("After move/rotate — size: -")
+            self.rot_size_label.setText("Size after rotation: -")
             return
-        x, y, x_open, y_open = rotated
-        self.rot_coord_label.setText(f"After move/rotate — coords: ({x:.4f}, {y:.4f}) µm")
-        self.rot_size_label.setText(f"After move/rotate — size: {x_open:.2f} × {y_open:.2f} µm")
+        _, _, x_open, y_open = rotated
+        self.rot_size_label.setText(f"Size after rotation: {x_open:.2f} × {y_open:.2f} µm")
 
     def update_ring_coords(self, ring):
-        """Refresh the ring-coordinate line. `ring` is (x, y) measured from
+        """Refresh the ring-position line. `ring` is (x, y) measured from
         the ring's bottom-left corner (X right, Y up), or None to blank it."""
         if ring is None:
-            self.ring_coord_label.setText("Ring coords: -")
+            self.ring_coord_label.setText("Ring position: -")
             return
         x, y = ring
-        self.ring_coord_label.setText(f"Ring coords: ({x:.4f}, {y:.4f}) µm")
+        self.ring_coord_label.setText(f"Ring position: ({x:.4f}, {y:.4f}) µm")
 
     def revert_bonding(self):
         """Restore the original bonding type and apply it so the diagram

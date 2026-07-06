@@ -23,7 +23,7 @@ class EditorWindow(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.pads = []
+        self.dies = []
         self.source_file = None
         self.setAutoFillBackground(True)
         self.init_ui()
@@ -107,28 +107,36 @@ class EditorWindow(QWidget):
         edit_layout.addWidget(self._divider())
 
         # Die placement: numeric alternative to dragging / handle rotation.
-        place_header = QHBoxLayout()
         place_title = QLabel("Die placement")
         place_title.setFont(QFont("Arial", 12, QFont.Bold))
         place_title.setStyleSheet("color: #2c3e50;")
-        place_header.addWidget(place_title)
-        place_header.addStretch()
+        edit_layout.addWidget(place_title)
+
+        # Which die the placement controls act on (click a die on the canvas
+        # also selects it here).
+        die_row = QHBoxLayout()
+        die_row.setSpacing(8)
+        die_row.addWidget(QLabel("Die:"))
+        self.die_combo = QComboBox()
+        self.die_combo.setToolTip("The die that the placement controls act on")
+        self.die_combo.currentIndexChanged.connect(self._on_die_combo_changed)
+        die_row.addWidget(self.die_combo, 1)
 
         small_rot_style = (
             "QPushButton { background-color: #3498db; color: white; border: none;"
             " border-radius: 4px; padding: 2px 8px; font-weight: bold; font-size: 12px; }"
             "QPushButton:hover { background-color: #2980b9; }")
         rot_ccw_btn = QPushButton("↺ 90°")
-        rot_ccw_btn.setToolTip("Rotate the die 90° counterclockwise")
+        rot_ccw_btn.setToolTip("Rotate the selected die 90° counterclockwise")
         rot_ccw_btn.setStyleSheet(small_rot_style)
         rot_ccw_btn.clicked.connect(lambda: self._rotate_die(90))
         rot_cw_btn = QPushButton("↻ 90°")
-        rot_cw_btn.setToolTip("Rotate the die 90° clockwise")
+        rot_cw_btn.setToolTip("Rotate the selected die 90° clockwise")
         rot_cw_btn.setStyleSheet(small_rot_style)
         rot_cw_btn.clicked.connect(lambda: self._rotate_die(-90))
-        place_header.addWidget(rot_ccw_btn)
-        place_header.addWidget(rot_cw_btn)
-        edit_layout.addLayout(place_header)
+        die_row.addWidget(rot_ccw_btn)
+        die_row.addWidget(rot_cw_btn)
+        edit_layout.addLayout(die_row)
 
         field_style = "border: 1px solid #bdc3c7; border-radius: 4px; padding: 5px;"
         place_form = QFormLayout()
@@ -197,12 +205,14 @@ class EditorWindow(QWidget):
             "  Light colors — bonded to a lead frame pin\n"
             "  Dark gray — die-to-die (SOC/PSRAM/DDRA/DDRB/ROM)\n"
             "  Dark red — unrecognized bonding value\n"
-            "  Orange border — selected pad\n"
-            "Bond wires: gray = to a lead frame pin, blue = to the VSS ring.\n"
+            "  Orange border — selected pad / selected die\n"
+            "Bond wires: gray = lead frame pin, blue = VSS ring,\n"
+            "  purple = die-to-die (pad → pad on another die).\n"
             "Lead frame pins are drawn solid black and labeled LF.<n>.\n"
-            "The ring and pins are fixed; only the die moves/rotates.\n"
+            "The ring and pins are fixed; each die moves/rotates on its own\n"
+            "(click a die to select it). Dies start arranged side by side.\n"
             "Ring (0,0): the axes at the ring's bottom-left corner are the\n"
-            "origin of the ring coordinate system (shown per pad).\n"
+            "origin of the shared ring coordinate system (shown per pad).\n"
             "\n"
             "\"Show on pad\" = Bond target codes:\n"
             "  <number> — lead frame pin number it bonds to\n"
@@ -252,77 +262,101 @@ class EditorWindow(QWidget):
 
         self.scene.pad_clicked.connect(self._on_pad_selected)
         self.scene.die_transform_changed.connect(self._on_die_transform_changed)
+        self.scene.die_selected.connect(self._on_scene_die_selected)
         self._apply_style()
 
     # --- data -----------------------------------------------------------
 
-    def set_data(self, pads, frame_params=None, source_file=None):
-        """Show the given pads (used by the upload page for each new file)."""
-        self.pads = pads
+    def set_data(self, dies, frame_params=None, source_file=None):
+        """Show the given dies (used by the upload page for each new file)."""
+        self.dies = dies
         self.source_file = source_file
 
         # Reset view options for a fresh file (without triggering redraws).
         self.scene.reset_view()
-        controls = (self.display_combo, self.wires_checkbox, self.renumber_checkbox)
+        controls = (self.display_combo, self.wires_checkbox, self.renumber_checkbox,
+                    self.die_combo)
         for widget in controls:
             widget.blockSignals(True)
         self.display_combo.setCurrentIndex(0)
         self.wires_checkbox.setChecked(True)
         self.renumber_checkbox.setChecked(False)
+        self.die_combo.clear()
+        self.die_combo.addItems([d.name for d in dies])
         for widget in controls:
             widget.blockSignals(False)
         self.editor.clear()
 
-        self.scene.set_pads(pads, frame_params)
+        self.scene.set_dies(dies, frame_params)
         self.view.fit_in_view()
         self._sync_die_fields()
-        self.export_btn.setEnabled(bool(pads))
+        self.export_btn.setEnabled(bool(dies))
+        total_pads = sum(len(d.pads) for d in dies)
+        die_word = "die" if len(dies) == 1 else "dies"
         self.status_label.setText(
-            f"Loaded {len(pads)} pads | Drag the die to move it, drag the round "
-            f"handle to rotate it | Click a pad to edit it.")
+            f"Loaded {len(dies)} {die_word} ({total_pads} pads) | Click a die to "
+            f"select it, drag to move, drag the handle to rotate | Click a pad to edit.")
 
     # --- interaction ------------------------------------------------------
+
+    def _current_die(self):
+        idx = self.scene.selected_die()
+        return idx if idx is not None else 0
 
     def _on_wires_toggled(self, checked):
         self.scene.set_wires_visible(checked)
 
     def _on_pad_selected(self, pad):
-        self.editor.load_pad(pad, self.scene.rotated_geometry(pad),
-                             self.scene.ring_coords(pad))
+        self.editor.load_pad(pad, self.scene.die_name_of(pad),
+                             self.scene.ring_coords(pad),
+                             self.scene.rotated_geometry(pad))
+
+    def _on_die_combo_changed(self, index):
+        if index >= 0:
+            self.scene.select_die(index)
+
+    def _on_scene_die_selected(self, index):
+        if self.die_combo.currentIndex() != index:
+            self.die_combo.blockSignals(True)
+            self.die_combo.setCurrentIndex(index)
+            self.die_combo.blockSignals(False)
+        self._sync_die_fields()
 
     def _rotate_die(self, degrees):
-        """Rotate the die 90° from the small buttons (keeps its position)."""
-        self.scene.rotate_die(degrees)
+        """Rotate the selected die 90° (keeps its position)."""
+        self.scene.rotate_die(self._current_die(), degrees)
         self._restore_selection()
 
     def _apply_die_placement(self):
-        """Numeric alternative to hand drag/rotation."""
+        """Numeric alternative to hand drag/rotation, for the selected die."""
         try:
             x = float(self.die_x_edit.text())
             y = float(self.die_y_edit.text())
             rotation = float(self.die_rot_edit.text())
         except ValueError:
             return
-        self.scene.set_die_transform(x, y, rotation)
+        self.scene.set_die_transform(self._current_die(), x, y, rotation)
         self._restore_selection()
 
     def _reset_die_placement(self):
-        self.scene.reset_die_transform()
+        self.scene.reset_die_transform(self._current_die())
         self._restore_selection()
-        self.view.fit_in_view()
 
-    def _on_die_transform_changed(self, center_x, center_y, rotation):
-        """Live sync while the die is dragged/rotated (by hand or numerically)."""
-        self.die_x_edit.setText(f"{center_x:.1f}")
-        self.die_y_edit.setText(f"{center_y:.1f}")
-        self.die_rot_edit.setText(f"{rotation:.1f}")
+    def _on_die_transform_changed(self, index, center_x, center_y, rotation):
+        """Live sync while a die is dragged/rotated (by hand or numerically)."""
+        if index == self._current_die():
+            self.die_x_edit.setText(f"{center_x:.1f}")
+            self.die_y_edit.setText(f"{center_y:.1f}")
+            self.die_rot_edit.setText(f"{rotation:.1f}")
         selected = self.editor.current_pad
         if selected is not None:
             self.editor.update_rotated(self.scene.rotated_geometry(selected))
             self.editor.update_ring_coords(self.scene.ring_coords(selected))
 
     def _sync_die_fields(self):
-        center_x, center_y, rotation = self.scene.die_transform()
+        if not self.dies:
+            return
+        center_x, center_y, rotation = self.scene.die_transform(self._current_die())
         self.die_x_edit.setText(f"{center_x:.1f}")
         self.die_y_edit.setText(f"{center_y:.1f}")
         self.die_rot_edit.setText(f"{rotation:.1f}")
@@ -365,16 +399,16 @@ class EditorWindow(QWidget):
             if not output_path:
                 return
 
-            # Bake the current rotation into the exported coordinates/sizes,
-            # optionally renumbering pads by their position.
-            export_pads = self.scene.pads_with_rotation_applied(
+            # One combined sheet of every die's pads, with each die's current
+            # move/rotation baked into ring coordinates.
+            export_rows = self.scene.pads_for_export(
                 renumber_by_position=self.renumber_checkbox.isChecked())
-            success, saved_path = exporter.export_modified_data(export_pads, output_path)
+            success, saved_path = exporter.export_combined(export_rows, output_path)
             if not success:
                 QMessageBox.warning(self, "Export Failed", "Could not export the Excel file.")
                 return
 
-            summary = exporter.get_export_summary(export_pads)
+            summary = exporter.get_export_summary([p for _, p in export_rows])
             QMessageBox.information(
                 self, "Export Successful",
                 f"Saved to: {saved_path}\n"

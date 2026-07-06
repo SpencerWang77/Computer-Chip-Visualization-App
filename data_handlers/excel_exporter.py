@@ -5,18 +5,22 @@ import openpyxl
 
 
 class ExcelExporter:
-    """Writes the (possibly modified) pad list to a new Excel file.
+    """Writes the (possibly modified) pad data to a new Excel file.
 
-    The original workbook is never modified. When a source file is given,
-    its two header rows are copied so the exported file keeps the same
-    format as the input. The caller always chooses the output path.
+    The original workbook is never modified; the caller chooses the output
+    path. Multi-die exports go into one combined sheet whose coordinates are
+    in the shared ring coordinate system (origin at the ring's bottom-left).
     """
 
     def __init__(self, source_file=None):
         self.source_file = source_file
 
-    def export_modified_data(self, pads, output_path):
-        """Export pads to output_path. Returns (success, saved_path)."""
+    def export_combined(self, rows, output_path):
+        """Export a combined sheet of all pads across every die.
+
+        `rows` is a list of (die_name, Pad) with coordinates already in the
+        ring frame. Returns (success, saved_path).
+        """
         try:
             if not output_path:
                 raise ValueError("No output path given")
@@ -25,33 +29,28 @@ class ExcelExporter:
                 os.makedirs(output_dir, exist_ok=True)
 
             workbook = openpyxl.Workbook()
-            connect_sheet = workbook.active
-            connect_sheet.title = "connect"
+            sheet = workbook.active
+            sheet.title = "All Pads"
 
-            header_rows = self._read_source_header_rows()
-            if header_rows:
-                for row_idx, row_values in enumerate(header_rows, 1):
-                    for col_idx, value in enumerate(row_values, 1):
-                        connect_sheet.cell(row=row_idx, column=col_idx, value=value)
-            else:
-                headers = ["Die Pad No", "Pad name", "X-coord", "Y-coord",
-                           "X open", "Y open", "Net Name", "Bonding", "", "Remark"]
-                units = ["", "", "(after shrink)", "(after shrink)",
-                         "(after shrink)", "(after shrink)", "", "relationship", "", ""]
-                for col_idx, value in enumerate(headers, 1):
-                    connect_sheet.cell(row=1, column=col_idx, value=value)
-                for col_idx, value in enumerate(units, 1):
-                    connect_sheet.cell(row=2, column=col_idx, value=value)
+            headers = ["Die", "Die Pad No", "Pad name", "X-coord (ring)",
+                       "Y-coord (ring)", "X open", "Y open", "Net Name", "Bonding"]
+            units = ["", "", "", "(ring frame)", "(ring frame)",
+                     "(after rotation)", "(after rotation)", "", "relationship"]
+            for col, value in enumerate(headers, 1):
+                sheet.cell(row=1, column=col, value=value)
+            for col, value in enumerate(units, 1):
+                sheet.cell(row=2, column=col, value=value)
 
-            for row_idx, pad in enumerate(pads, 3):
-                connect_sheet.cell(row=row_idx, column=1, value=pad.pad_id)
-                connect_sheet.cell(row=row_idx, column=2, value=pad.pad_name)
-                connect_sheet.cell(row=row_idx, column=3, value=pad.x_coord)
-                connect_sheet.cell(row=row_idx, column=4, value=pad.y_coord)
-                connect_sheet.cell(row=row_idx, column=5, value=pad.x_open)
-                connect_sheet.cell(row=row_idx, column=6, value=pad.y_open)
-                connect_sheet.cell(row=row_idx, column=7, value=pad.net_name)
-                connect_sheet.cell(row=row_idx, column=8, value=pad.bonding)
+            for row_idx, (die_name, pad) in enumerate(rows, 3):
+                sheet.cell(row=row_idx, column=1, value=die_name)
+                sheet.cell(row=row_idx, column=2, value=pad.pad_id)
+                sheet.cell(row=row_idx, column=3, value=pad.pad_name)
+                sheet.cell(row=row_idx, column=4, value=pad.x_coord)
+                sheet.cell(row=row_idx, column=5, value=pad.y_coord)
+                sheet.cell(row=row_idx, column=6, value=pad.x_open)
+                sheet.cell(row=row_idx, column=7, value=pad.y_open)
+                sheet.cell(row=row_idx, column=8, value=pad.net_name)
+                sheet.cell(row=row_idx, column=9, value=pad.bonding)
 
             workbook.save(output_path)
             return True, output_path
@@ -59,22 +58,6 @@ class ExcelExporter:
         except Exception as e:
             print(f"Excel export failed: {e}")
             return False, None
-
-    def _read_source_header_rows(self):
-        """First two rows of the source 'connect' sheet, or None."""
-        if not self.source_file or not os.path.exists(self.source_file):
-            return None
-        try:
-            workbook = openpyxl.load_workbook(self.source_file, read_only=True)
-            if "connect" not in workbook.sheetnames:
-                return None
-            sheet = workbook["connect"]
-            rows = []
-            for row in sheet.iter_rows(min_row=1, max_row=2, values_only=True):
-                rows.append(list(row))
-            return rows
-        except Exception:
-            return None
 
     def get_export_summary(self, pads):
         return {

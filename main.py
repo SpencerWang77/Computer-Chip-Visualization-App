@@ -102,8 +102,9 @@ class ChipVisApp(QMainWindow):
         self.progress_control.disable_start_button()
 
         if self.excel_handler.read_excel(self.current_file):
-            pads = self.excel_handler.get_pads()
-            print(f"Loaded {len(pads)} pads from {self.current_file}")
+            dies = self.excel_handler.get_dies()
+            print(f"Loaded {len(dies)} die(s) from {self.current_file}: "
+                  f"{', '.join(d.name for d in dies)}")
 
             # Pre-fill the pin count from the data; the user can override it.
             self.upload_section.set_pin_count(self.excel_handler.suggest_pin_count())
@@ -117,14 +118,14 @@ class ChipVisApp(QMainWindow):
         if not self.current_file:
             return
 
-        pads = self.excel_handler.get_pads()
-        if not pads:
-            self.progress_control.set_error_status("No pads found in the file")
+        dies = self.excel_handler.get_dies()
+        if not dies:
+            self.progress_control.set_error_status("No dies found in the file")
             return
 
         frame_params = self.upload_section.get_frame_parameters()
 
-        self.editor_page.set_data(pads, frame_params,
+        self.editor_page.set_data(dies, frame_params,
                                   source_file=self.current_file)
         self.stack.setCurrentIndex(1)
         # Fit once the editor page has taken its final size.

@@ -126,20 +126,7 @@ class UploadSection(QGroupBox):
             }
         """
 
-        self.die_width_input = QLineEdit()
-        self.die_width_input.setPlaceholderText("e.g. 5000")
-        self.die_width_input.setText("3475.8")
-        self.die_width_input.setValidator(QDoubleValidator(0.1, 100000.0, 2))
-        self.die_width_input.setStyleSheet(input_style)
-        form_layout.addRow("Die width (µm):", self.die_width_input)
-
-        self.die_height_input = QLineEdit()
-        self.die_height_input.setPlaceholderText("e.g. 5000")
-        self.die_height_input.setText("3105")
-        self.die_height_input.setValidator(QDoubleValidator(0.1, 100000.0, 2))
-        self.die_height_input.setStyleSheet(input_style)
-        form_layout.addRow("Die height (µm):", self.die_height_input)
-
+        # Die sizes are read per-die from the file; only these two are optional.
         self.pin_count_input = QLineEdit()
         self.pin_count_input.setPlaceholderText("auto-detected from the file")
         self.pin_count_input.setValidator(QIntValidator(4, 1000))
@@ -147,15 +134,16 @@ class UploadSection(QGroupBox):
         form_layout.addRow("Lead frame pin count:", self.pin_count_input)
 
         self.ring_size_input = QLineEdit()
-        self.ring_size_input.setPlaceholderText("auto: 1.35 × die size")
+        self.ring_size_input.setPlaceholderText("auto: spacious default")
         self.ring_size_input.setValidator(QDoubleValidator(1.0, 1000000.0, 2))
         self.ring_size_input.setStyleSheet(input_style)
         form_layout.addRow("VSS ring size (µm):", self.ring_size_input)
 
-        info_label = QLabel("* Pin count is auto-filled from the highest LF.<n>\n"
-                            "  in the file (rounded up to a multiple of 4).\n"
-                            "* VSS ring size is the outer side length of the\n"
-                            "  square ring; leave empty for a spacious default.")
+        info_label = QLabel("* Die sizes are read from each 'Die Netlist' tab\n"
+                            "  (and 'Basic information'); no need to enter them.\n"
+                            "* Pin count auto-fills from the file; ring size is\n"
+                            "  the square ring's outer side (leave empty for a\n"
+                            "  default large enough to move all dies).")
         info_label.setStyleSheet("""
             QLabel {
                 color: #7f8c8d;
@@ -175,13 +163,9 @@ class UploadSection(QGroupBox):
 
     def get_frame_parameters(self):
         try:
-            die_width = float(self.die_width_input.text()) if self.die_width_input.text() else None
-            die_height = float(self.die_height_input.text()) if self.die_height_input.text() else None
             pin_count = int(self.pin_count_input.text()) if self.pin_count_input.text() else None
             ring_size = float(self.ring_size_input.text()) if self.ring_size_input.text() else None
             return {
-                'die_width': die_width,
-                'die_height': die_height,
                 'pin_count': pin_count,
                 'ring_size': ring_size,
             }

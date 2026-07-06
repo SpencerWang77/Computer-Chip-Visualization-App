@@ -1,8 +1,9 @@
 # Chip Bonding Visualization
 
 A PyQt5 desktop app for visualizing and editing the pad layout and bonding
-relationships of a chip die: which pads are wire-bonded to lead frame pins,
-which are down-bonded to the VSS ring (E-PAD ring), and which are not bonded.
+relationships of one or more chip dies: which pads are wire-bonded to lead
+frame pins, which are down-bonded to the VSS ring (E-PAD ring), which bond to
+a pad on another die, and which are not bonded.
 
 ## Running
 
@@ -15,45 +16,54 @@ python main.py
 
 ## Usage
 
-1. Select an Excel bonding file (must contain a `connect` worksheet).
-2. Check the die width/height; the lead frame pin count is auto-detected
-   from the file and can be overridden. Optionally set the **VSS ring size**
-   (outer side of the square ring); left empty, a spacious default is used.
-3. Click **Start Visualization** to open the editor (one window; use
+1. Select an Excel bonding file. Die sizes and pin count are read from the
+   file; only the **VSS ring size** is optional (outer side of the square
+   ring — leave empty for a default large enough to move all dies around).
+2. Click **Start Visualization** to open the editor (one window; use
    **← Back to Upload** to return):
-   - The **die** (with numbered pads) sits inside a fixed square **VSS ring**
-     and the numbered black **lead frame pins** (LF.1 top of the left side,
-     counting left↓ bottom→ right↑ top←).
-   - **Move/rotate the die**: drag its body to move it, drag the round
-     handle at its top-right corner to rotate it by any angle — or type the
-     center position and angle in **Die placement** and press Apply. The
-     ring and pins never move; bond wires re-route live.
-   - The axes at the ring's bottom-left corner mark the **ring coordinate
-     system** origin; each pad's position in it is shown in the side panel.
-   - **Bond wires** connect each pad to its LF pin (gray) or the VSS ring
-     (blue); toggle with "Show bond wires".
+   - Each **die** (with numbered pads) sits inside a fixed square **VSS ring**,
+     surrounded by numbered black **lead frame pins** (LF.1 top of the left
+     side, counting left↓ bottom→ right↑ top←). Multiple dies start arranged
+     side by side.
+   - **Move/rotate a die**: click a die to select it (orange border), then
+     drag its body to move it, drag the round handle to rotate it by any
+     angle — or pick the die in the **Die placement** dropdown and type its
+     center position and angle. Each die moves independently; the ring and
+     pins never move; bond wires re-route live.
+   - The axes at the ring's bottom-left corner mark the shared **ring
+     coordinate system** origin; each pad's position in it is shown in the
+     side panel.
+   - **Bond wires**: gray = to a lead frame pin, blue = to the VSS ring,
+     purple = die-to-die (pad → pad on another die). Toggle with "Show bond
+     wires".
    - Click a pad to edit its name, net name or bonding target; saving
      updates the drawing immediately. **Revert** restores the original
      bonding value.
    - The **Show on pad** dropdown switches pad labels between the original
-     number, the position number (rotation-aware), and the bond target code
-     (LF pin number / V / E / N / O / U).
-4. **Export Modified Excel** writes a new file to a location you choose;
-   the current die move/rotation is baked into the exported coordinates and
-   sizes, and the original file is never modified. Optionally renumber pads
-   by position via the checkbox next to the export button.
+     number, the position number (rotation-aware, per die), and the bond
+     target code (LF pin number / V / E / N / O / U).
+3. **Export Modified Excel** writes a new file to a location you choose: one
+   combined sheet of all pads from every die, with each die's current
+   move/rotation baked into shared ring coordinates. The original file is
+   never modified.
 
-## Excel format (`connect` sheet)
+## Excel format
+
+**Multi-die**: one sheet per die named `Die Netlist(<name>)` (e.g.
+`Die Netlist(SOC)`), plus an optional `Basic information` sheet giving each
+die's size and the pin count. **Legacy single-die**: a sheet named `connect`.
+
+Each die sheet:
 
 | Row | Content |
 |-----|---------|
 | 1 | Headers: Die Pad No, Pad name, X-coord, Y-coord, X open, Y open, Net Name, Bonding |
 | 2 | Units / remarks |
-| 3+ | Pad data (coordinates in µm, origin bottom-left, Y up) |
+| 3+ | Pad data (coordinates in µm, each die's own origin bottom-left, Y up) |
 
 Bonding values: `LF.<n>` (lead frame pin), `VSS_ring` (E-PAD ring),
-`Not Bond`, or `SOC.<n>` / `PSRAM.<n>` / `DDRA.<n>` / `DDRB.<n>` / `ROM.<n>`
-(die-to-die).
+`Not Bond`, or `SOC.<n>` / `ROM.<n>` / … (die-to-die — a wire to that pad on
+the named die).
 
 ## Project structure
 
@@ -61,15 +71,16 @@ Bonding values: `LF.<n>` (lead frame pin), `VSS_ring` (E-PAD ring),
 main.py                        Entry point: single window (upload/editor pages)
 models/
   pad.py                       Pad data model
-  chip_layout.py               Pad list + rectangle geometry (die coords)
+  chip_layout.py               Pad list + rectangle geometry (one die's coords)
+  die.py                       A named die: pads + size + geometry
 data_handlers/
-  excel_handler.py             Reads the 'connect' sheet, pin auto-detect
-  excel_exporter.py            Writes modified pads to a new workbook
+  excel_handler.py             Reads die tabs + Basic information; pin auto-detect
+  excel_exporter.py            Writes all pads to one combined sheet
 ui/
   upload_section.py            File picker + package parameters
   format_description.py        File-format help box
   progress_control.py          Status label + start button
-  chip_visualization.py        Scene/view: movable die, fixed ring/pins, wires
+  chip_visualization.py        Scene/view: movable dies, fixed ring/pins, wires
   pad_editor.py                Edit panel for one pad
   editor_window.py             Editor page (diagram + controls)
 ```

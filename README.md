@@ -23,7 +23,7 @@ python main.py
    default large enough to move all dies around.
 2. Click **Start Visualization** to open the editor (one window; use
    **← Back to Upload** to return):
-   - Each **die** (with numbered pads) sits inside a fixed square **VSS ring**,
+   - Each **die** (with numbered pads) sits inside a fixed **VSS ring**,
      surrounded by numbered black **lead frame pins** (LF.1 top of the left
      side, counting left↓ bottom→ right↑ top←). Multiple dies start arranged
      side by side.
@@ -32,13 +32,17 @@ python main.py
      angle — or pick the die in the **Die placement** dropdown and type its
      center position and angle. Each die moves independently; the ring and
      pins never move; bond wires re-route live.
+   - **VSS ring size** can be changed live in the side panel (W × H µm); the
+     dies stay in place as the ring resizes.
    - The axes at the ring's bottom-left corner mark the shared **ring
      coordinate system** origin; each pad's position in it is shown in the
      side panel.
-   - **Bond wires**: gray = to a lead frame pin, blue = to the VSS ring,
-     purple = die-to-die (pad → pad on another die). Toggle with "Show bond
-     wires". **Show pad names** labels each pad beside it; **Priority** (drag
-     to reorder the dies) sets which die is drawn on top when dies overlap.
+   - **Bond wires**: gray = to a lead frame pin, blue = to the VSS ring
+     (drawn radially — continuing the line from the die center through the
+     pad out to the ring), purple = die-to-die (pad → pad on another die).
+     Toggle with "Show bond wires". **Show pad names** labels each pad beside
+     it; **Priority** (drag to reorder the dies) sets which die is drawn on
+     top when dies overlap.
    - Click a pad to edit its name, net name or bonding target; saving
      updates the drawing immediately. **Revert** restores the original
      bonding value.
@@ -46,9 +50,11 @@ python main.py
      number, the position number (rotation-aware, per die), and the bond
      target code (LF pin number / V / E / N / O / U).
 3. **Export Modified Excel** writes a new file to a location you choose: one
-   combined sheet of all pads from every die, with each die's current
-   move/rotation baked into shared ring coordinates. The original file is
-   never modified.
+   `Die Netlist(<name>)` tab per die (pad coordinates in each die's own local
+   frame, mirroring the input), plus a `Basic information` sheet recording the
+   VSS ring size and every die's position and angle. Reopening that file
+   restores the ring size and drops every die back exactly where you left it.
+   The original file is never modified.
 
 ## Excel format
 

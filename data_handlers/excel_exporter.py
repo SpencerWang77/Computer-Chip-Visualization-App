@@ -12,19 +12,23 @@ class ExcelExporter:
     in the shared ring coordinate system (origin at the ring's bottom-left).
     """
 
-    HEADERS = ["Die Pad No", "Pad name", "X-coord", "Y-coord",
-               "X open", "Y open", "Net Name", "Bonding"]
-    UNITS = ["", "", "(ring frame)", "(ring frame)",
-             "(after rotation)", "(after rotation)", "", "relationship"]
+    # Mirror the input die-netlist tabs exactly (row 1 headers, row 2 blank),
+    # so exported die tabs are structurally identical to the input.
+    HEADERS = ["Die Pad No", "Pad name", "X-coord\n(after shrink)",
+               "Y-coord\n(after shrink)", "X open\n(after shrink)",
+               "Y open\n(after shrink)", "Net Name", "Bonding\nrelationship"]
+    UNITS = ["", "", "", "", "", "", "", ""]
 
     def __init__(self, source_file=None):
         self.source_file = source_file
 
-    def export_by_die(self, rows, output_path):
-        """Export one 'Die Netlist(<name>)' tab per die (mirroring the input).
+    def export_by_die(self, rows, output_path, metadata=None):
+        """Export one 'Die Netlist(<name>)' tab per die (mirroring the input),
+        with pad coordinates in each die's own local frame, plus a 'Basic
+        information' sheet recording the VSS ring size and every die's placement
+        so the file can be reopened exactly where it was left off.
 
-        `rows` is a list of (die_name, Pad) with coordinates already baked into
-        the shared ring frame. Returns (success, saved_path).
+        `rows` is a list of (die_name, Pad). Returns (success, saved_path).
         """
         try:
             if not output_path:
@@ -33,13 +37,16 @@ class ExcelExporter:
             if output_dir:
                 os.makedirs(output_dir, exist_ok=True)
 
-            # Group pads by die, preserving first-seen die order.
             by_die = {}
             for die_name, pad in rows:
                 by_die.setdefault(die_name, []).append(pad)
 
             workbook = openpyxl.Workbook()
             workbook.remove(workbook.active)  # drop the default empty sheet
+
+            if metadata:
+                self._write_basic_information(workbook, metadata)
+
             for die_name, pads in by_die.items():
                 sheet = workbook.create_sheet(title=self._sheet_title(die_name))
                 for col, value in enumerate(self.HEADERS, 1):
@@ -62,6 +69,32 @@ class ExcelExporter:
         except Exception as e:
             print(f"Excel export failed: {e}")
             return False, None
+
+    def _write_basic_information(self, workbook, meta):
+        """Machine-readable layout state, read back by ExcelHandler."""
+        sheet = workbook.create_sheet(title="Basic information")
+        sheet.cell(row=1, column=1, value="Basic information")
+        sheet.cell(row=1, column=2, value="(saved by Chip Pad Editor — reopen to resume)")
+
+        sheet.cell(row=3, column=1, value="VSS ring size (um)")
+        sheet.cell(row=3, column=2, value=meta.get('ring_w'))
+        sheet.cell(row=3, column=3, value=meta.get('ring_h'))
+
+        sheet.cell(row=4, column=1, value="Lead frame pins")
+        sheet.cell(row=4, column=2, value=meta.get('pin_x'))
+        sheet.cell(row=4, column=3, value=meta.get('pin_y'))
+
+        sheet.cell(row=6, column=1, value="Die placement (ring coordinates)")
+        header = ["Die", "Center X", "Center Y", "Rotation (deg)", "Width", "Height"]
+        for col, value in enumerate(header, 1):
+            sheet.cell(row=7, column=col, value=value)
+        for i, die in enumerate(meta.get('dies', []), 8):
+            sheet.cell(row=i, column=1, value=die['name'])
+            sheet.cell(row=i, column=2, value=round(die['center_x'], 4))
+            sheet.cell(row=i, column=3, value=round(die['center_y'], 4))
+            sheet.cell(row=i, column=4, value=round(die['angle'], 4))
+            sheet.cell(row=i, column=5, value=round(die['width'], 4))
+            sheet.cell(row=i, column=6, value=round(die['height'], 4))
 
     @staticmethod
     def _sheet_title(die_name):

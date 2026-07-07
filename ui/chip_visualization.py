@@ -454,18 +454,14 @@ class ChipScene(QGraphicsScene):
         return rx, ry, x_open, y_open
 
     def pads_for_export(self, renumber_by_position=False):
-        """Clones of every pad (all dies) with ring coordinates and rotated
-        openings baked in. Optionally renumbered by position."""
+        """Clones of every pad in its die's own (local) coordinates. Die
+        placements are recorded separately (see layout_metadata), so reopening
+        the file restores each die exactly. Optionally renumber by position."""
         result = []
-        for idx, die in enumerate(self.dies):
-            st = self._states[idx]
-            moved = st['rotation'] != 0 or st['offset'] != (0.0, 0.0)
+        for die in self.dies:
             for pad in die.pads:
-                rx, ry, xo, yo = self.rotated_geometry(pad)
                 clone = pad.clone()
-                clone.x_coord, clone.y_coord = rx, ry
-                clone.x_open, clone.y_open = xo, yo
-                if pad.is_modified or moved:
+                if pad.is_modified:
                     clone.mark_as_modified()
                 pos = self._position_numbers.get(pad.pad_id)
                 if renumber_by_position and pos is not None:
@@ -474,6 +470,35 @@ class ChipScene(QGraphicsScene):
                     clone.mark_as_modified()
                 result.append((die.name, clone))
         return result
+
+    def layout_metadata(self):
+        """Ring size, pin layout, and each die's placement (center in ring
+        coordinates + rotation) and size — saved to the export so the file
+        can be reopened exactly where it was left off."""
+        ring_w = self.ring_outer.width() if self.ring_outer else None
+        ring_h = self.ring_outer.height() if self.ring_outer else None
+        pin_x, pin_y = self._compute_pin_counts()
+        dies = []
+        for idx, die in enumerate(self.dies):
+            cx, cy, angle = self.die_transform(idx)
+            dies.append({'name': die.name, 'center_x': cx, 'center_y': cy,
+                         'angle': angle, 'width': die.width, 'height': die.height})
+        return {'ring_w': ring_w, 'ring_h': ring_h,
+                'pin_x': pin_x, 'pin_y': pin_y, 'dies': dies}
+
+    def ring_size(self):
+        """Current ring outer (width, height), or None."""
+        if self.ring_outer is None:
+            return None
+        return self.ring_outer.width(), self.ring_outer.height()
+
+    def set_ring_size(self, width, height):
+        """Change the VSS ring size live (keeps dies at their scene positions)."""
+        params = dict(self._frame_params or {})
+        params['ring_w'] = float(width)
+        params['ring_h'] = float(height)
+        self._frame_params = params
+        self.refresh()  # refresh() preserves the die transforms
 
     # --- drawing ----------------------------------------------------------
 
@@ -497,9 +522,12 @@ class ChipScene(QGraphicsScene):
             return
 
         self._arrange_dies()
+        had_preserved = bool(self._preserved_transforms)
         self._restore_preserved_transforms()
         ring_w, ring_h = self._ring_size()
         self._draw_vss_ring(ring_w, ring_h)
+        if not had_preserved:
+            self._apply_saved_placements()  # needs ring_outer (ring coords)
         pin_x, pin_y = self._compute_pin_counts()
         self._draw_lead_frame_pins(self._pin_reference_rect(ring_w, ring_h),
                                    pin_x, pin_y)
@@ -560,6 +588,24 @@ class ChipScene(QGraphicsScene):
             self._selected_die = selected
         self._preserved_transforms = None
         self._preserved_selected = None
+
+    def _apply_saved_placements(self):
+        """Apply die placements loaded from the file's 'Basic information'
+        (center in ring coordinates + angle), so the file reopens exactly
+        where it was left off. Runs on a fresh load, after the ring exists."""
+        placements = (self._frame_params or {}).get('placements')
+        if not placements:
+            return
+        for i, die in enumerate(self.dies):
+            p = placements.get(die.name)
+            if not p:
+                continue
+            cx, cy, angle = p
+            target = self._ring_to_scene(cx, cy)
+            st = self._states[i]
+            st['offset'] = (target.x() - st['arranged'].x(),
+                            target.y() - st['arranged'].y())
+            st['rotation'] = self._normalize_angle(angle)
 
     def _ring_size(self):
         """Outer (width, height) of the VSS ring. User values (rectangle) are
@@ -838,6 +884,43 @@ class ChipScene(QGraphicsScene):
             _, (x, y) = min(distances, key=lambda d: d[0])
         return QPointF(x, y)
 
+    def _die_center_scene(self, idx):
+        st = self._states[idx]
+        return QPointF(st['arranged'].x() + st['offset'][0],
+                       st['arranged'].y() + st['offset'][1])
+
+    def _radial_ring_point(self, source, center):
+        """Point on the ring where the ray from `center` through `source`
+        (extended outward) meets the ring — so the wire continues the line
+        from the die center through the pad."""
+        rect = self.ring_centerline
+        dx = source.x() - center.x()
+        dy = source.y() - center.y()
+        if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+            return self._nearest_ring_point(source)
+        ts = []
+        if dx > 0:
+            ts.append((rect.right() - source.x()) / dx)
+        elif dx < 0:
+            ts.append((rect.left() - source.x()) / dx)
+        if dy > 0:
+            ts.append((rect.bottom() - source.y()) / dy)
+        elif dy < 0:
+            ts.append((rect.top() - source.y()) / dy)
+        positive = [t for t in ts if t > 1e-9]
+        if not positive:
+            return self._nearest_ring_point(source)
+        t = min(positive)
+        return QPointF(source.x() + t * dx, source.y() + t * dy)
+
+    def _ring_target(self, sid, source):
+        """Ring connection point for pad `sid`: radially outward from its die
+        center through the pad."""
+        idx = self.pad_die.get(sid)
+        if idx is None:
+            return self._nearest_ring_point(source)
+        return self._radial_ring_point(source, self._die_center_scene(idx))
+
     def _draw_bond_wires(self):
         drawn_pairs = set()
         for pad in (p for d in self.dies for p in d.pads):
@@ -852,7 +935,7 @@ class ChipScene(QGraphicsScene):
                 color, info = COLOR_LF_WIRE, ('lf', detail)
                 extra = None
             elif kind in ('vss_ring', 'epad') and self.ring_centerline is not None:
-                target = self._nearest_ring_point(source)
+                target = self._ring_target(sid, source)
                 color, info = COLOR_RING_WIRE, ('ring', None)
                 extra = None
             elif kind == 'die' and detail in self.pad_items and detail != sid:
@@ -940,7 +1023,7 @@ class ChipScene(QGraphicsScene):
             elif kind == 'die':
                 target = self.pad_scene_center(detail) if detail in self.pad_items else None
             else:
-                target = self._nearest_ring_point(source)
+                target = self._ring_target(sid, source)
             if target is None:
                 continue
             wire.setLine(source.x(), source.y(), target.x(), target.y())

@@ -189,6 +189,20 @@ class UploadSection(QGroupBox):
             self.pin_x_input.setText(str(per_edge))
             self.pin_y_input.setText(str(per_edge))
 
+    def set_pins(self, pin_x, pin_y):
+        """Pre-fill the per-edge pin counts (e.g. from a saved layout)."""
+        if pin_x:
+            self.pin_x_input.setText(str(int(pin_x)))
+        if pin_y:
+            self.pin_y_input.setText(str(int(pin_y)))
+
+    def set_ring_size(self, width, height):
+        """Pre-fill the ring size fields (e.g. from a saved layout)."""
+        if width:
+            self.ring_w_input.setText(f"{float(width):g}")
+        if height:
+            self.ring_h_input.setText(f"{float(height):g}")
+
     def get_frame_parameters(self):
         try:
             def num(widget, cast):

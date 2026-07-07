@@ -29,6 +29,9 @@ class ExcelHandler:
         self.dies: List[Die] = []
         self.source_file = None
         self.pin_count = None
+        self.saved_pins = None       # (pin_x, pin_y) from a saved layout
+        self.saved_ring_size = None  # (width, height) from a saved layout
+        self.saved_placements = {}   # die_name -> (center_x, center_y, angle)
 
     def read_excel(self, file_path: str) -> bool:
         try:
@@ -37,7 +40,7 @@ class ExcelHandler:
             die_tabs = [(name, self._DIE_name(name)) for name in workbook.sheetnames
                         if _DIE_TAB_PATTERN.match(name)]
 
-            sizes, self.pin_count = self._read_basic_information(workbook)
+            sizes = self._read_basic_information(workbook)
 
             self.dies = []
             if die_tabs:
@@ -70,14 +73,26 @@ class ExcelHandler:
         return _DIE_TAB_PATTERN.match(sheet_name).group(1).strip()
 
     @staticmethod
+    def _is_number(v) -> bool:
+        try:
+            float(v)
+            return True
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
     def _read_pads(sheet) -> List[Pad]:
+        """Read pad rows, auto-detecting where the data starts. A data row has
+        a non-empty first cell (the pad id) and a numeric X-coord, so any
+        number of header/title/units rows is skipped — this keeps the first
+        pad (e.g. SOC.1) from being dropped when the title layout varies."""
         pads = []
-        for row in sheet.iter_rows(min_row=3, max_row=sheet.max_row):
-            pad_id = row[0].value
-            if not pad_id:
-                continue
+        for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row):
+            pad_id = row[0].value if len(row) > 0 else None
+            x_coord = row[2].value if len(row) > 2 else None
+            if not pad_id or not ExcelHandler._is_number(x_coord):
+                continue  # header / units / title / blank row
             pad_name = row[1].value if len(row) > 1 else ""
-            x_coord = row[2].value if len(row) > 2 else 0
             y_coord = row[3].value if len(row) > 3 else 0
             x_open = row[4].value if len(row) > 4 else 0
             y_open = row[5].value if len(row) > 5 else 0
@@ -88,19 +103,34 @@ class ExcelHandler:
         return pads
 
     def _read_basic_information(self, workbook):
-        """Return ({die_name: (width, height)}, pin_count) from the
-        'Basic information' sheet, or ({}, None) if absent."""
+        """Parse the 'Basic information' sheet, supporting both the original
+        input format (DIE Code / Die size / Pin count) and the format this app
+        writes on export (VSS ring size / Lead frame pins / Die placement).
+
+        Populates self.pin_count, self.saved_pins, self.saved_ring_size and
+        self.saved_placements; returns {die_name: (width, height)}."""
         sizes = {}
-        pin_count = None
+        self.pin_count = None
+        self.saved_pins = None
+        self.saved_ring_size = None
+        self.saved_placements = {}
         if 'Basic information' not in workbook.sheetnames:
-            return sizes, pin_count
+            return sizes
         sheet = workbook['Basic information']
         rows = list(sheet.iter_rows(values_only=True))
 
-        die_codes = []  # column index (>=1) -> die name
+        def num(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
+        die_codes = []  # column index (>=1) -> die name (original format)
         size_row = None
-        for row in rows:
+        for r, row in enumerate(rows):
             label = str(row[0]).strip().lower() if row and row[0] else ""
+
+            # --- original input format ---
             if 'die code' in label:
                 die_codes = [(i, str(v).strip()) for i, v in enumerate(row)
                              if i >= 1 and v]
@@ -108,11 +138,21 @@ class ExcelHandler:
                 size_row = row
             elif 'pin count' in label:
                 for v in row[1:]:
-                    if v:
-                        m = re.search(r'\d+', str(v))
-                        if m:
-                            pin_count = int(m.group())
-                            break
+                    if v and re.search(r'\d', str(v)):
+                        self.pin_count = int(re.search(r'\d+', str(v)).group())
+                        break
+
+            # --- this app's saved layout ---
+            elif 'vss ring size' in label:
+                w, h = num(row[1] if len(row) > 1 else None), num(row[2] if len(row) > 2 else None)
+                if w and h:
+                    self.saved_ring_size = (w, h)
+            elif 'lead frame pins' in label:
+                x, y = num(row[1] if len(row) > 1 else None), num(row[2] if len(row) > 2 else None)
+                if x and y:
+                    self.saved_pins = (int(x), int(y))
+            elif 'die placement' in label:
+                self.saved_placements = self._read_placement_table(rows, r + 1, sizes)
 
         if die_codes and size_row is not None:
             for col, name in die_codes:
@@ -120,12 +160,51 @@ class ExcelHandler:
                     m = _SIZE_PATTERN.search(str(size_row[col]))
                     if m:
                         sizes[name] = (float(m.group(1)), float(m.group(2)))
-        return sizes, pin_count
+        return sizes
+
+    @staticmethod
+    def _read_placement_table(rows, start, sizes):
+        """Parse the 'Die placement' table: a header row then
+        (name, cx, cy, angle, width, height) rows until a blank name."""
+        placements = {}
+        for row in rows[start:]:
+            if not row or not row[0]:
+                break
+            first = str(row[0]).strip().lower()
+            if first in ('die', 'name'):  # header row
+                continue
+
+            def cell(i):
+                try:
+                    return float(row[i]) if len(row) > i and row[i] is not None else None
+                except (TypeError, ValueError):
+                    return None
+
+            name = str(row[0]).strip()
+            cx, cy, angle = cell(1), cell(2), cell(3)
+            w, h = cell(4), cell(5)
+            if cx is not None and cy is not None:
+                placements[name] = (cx, cy, angle or 0.0)
+            if w and h:
+                sizes[name] = (w, h)
+        return placements
 
     # --- accessors -------------------------------------------------------
 
     def get_dies(self) -> List[Die]:
         return self.dies
+
+    def get_saved_ring_size(self):
+        """(width, height) if the file was saved by this app, else None."""
+        return self.saved_ring_size
+
+    def get_saved_pins(self):
+        """(pin_x, pin_y) if the file was saved by this app, else None."""
+        return self.saved_pins
+
+    def get_saved_placements(self):
+        """{die_name: (center_x, center_y, angle)} from a saved layout, or {}."""
+        return dict(self.saved_placements)
 
     def get_pads(self) -> List[Pad]:
         """All pads across every die (flattened)."""

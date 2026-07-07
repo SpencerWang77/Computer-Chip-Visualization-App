@@ -182,6 +182,36 @@ class EditorWindow(QWidget):
 
         edit_layout.addWidget(self._divider())
 
+        # VSS ring size (editable live).
+        ring_title = QLabel("VSS ring size")
+        ring_title.setFont(QFont("Arial", 12, QFont.Bold))
+        ring_title.setStyleSheet("color: #2c3e50;")
+        edit_layout.addWidget(ring_title)
+
+        ring_row = QHBoxLayout()
+        ring_row.setSpacing(6)
+        self.ring_w_edit = QLineEdit()
+        self.ring_h_edit = QLineEdit()
+        for edit in (self.ring_w_edit, self.ring_h_edit):
+            edit.setValidator(QDoubleValidator(1.0, 1e7, 2))
+            edit.setStyleSheet(field_style)
+            edit.returnPressed.connect(self._apply_ring_size)
+        times = QLabel("×")
+        times.setStyleSheet("color: #7f8c8d; font-weight: bold;")
+        ring_apply = QPushButton("Apply")
+        ring_apply.setToolTip("Resize the VSS ring (µm); dies stay in place")
+        ring_apply.setStyleSheet(self._button_style("#3498db", "#2980b9"))
+        ring_apply.clicked.connect(self._apply_ring_size)
+        ring_row.addWidget(QLabel("W"))
+        ring_row.addWidget(self.ring_w_edit)
+        ring_row.addWidget(times)
+        ring_row.addWidget(QLabel("H"))
+        ring_row.addWidget(self.ring_h_edit)
+        ring_row.addWidget(ring_apply)
+        edit_layout.addLayout(ring_row)
+
+        edit_layout.addWidget(self._divider())
+
         # Export section
         export_title = QLabel("Export")
         export_title.setFont(QFont("Arial", 12, QFont.Bold))
@@ -337,6 +367,7 @@ class EditorWindow(QWidget):
         self.scene.set_dies(dies, frame_params)
         self.view.fit_in_view()
         self._sync_die_fields()
+        self._sync_ring_fields()
         self.export_btn.setEnabled(bool(dies))
         total_pads = sum(len(d.pads) for d in dies)
         die_word = "die" if len(dies) == 1 else "dies"
@@ -397,6 +428,23 @@ class EditorWindow(QWidget):
         self.scene.reset_die_transform(self._current_die())
         self._restore_selection()
 
+    def _apply_ring_size(self):
+        """Resize the VSS ring live from the panel fields."""
+        try:
+            w = float(self.ring_w_edit.text())
+            h = float(self.ring_h_edit.text())
+        except ValueError:
+            return
+        self.scene.set_ring_size(w, h)
+        self._sync_ring_fields()
+        self._restore_selection()
+
+    def _sync_ring_fields(self):
+        size = self.scene.ring_size()
+        if size is not None:
+            self.ring_w_edit.setText(f"{size[0]:.1f}")
+            self.ring_h_edit.setText(f"{size[1]:.1f}")
+
     def _on_die_transform_changed(self, index, center_x, center_y, rotation):
         """Live sync while a die is dragged/rotated (by hand or numerically)."""
         if index == self._current_die():
@@ -454,11 +502,14 @@ class EditorWindow(QWidget):
             if not output_path:
                 return
 
-            # One 'Die Netlist(<name>)' tab per die, with each die's current
-            # move/rotation baked into ring coordinates.
+            # One 'Die Netlist(<name>)' tab per die (die-local coordinates),
+            # plus a 'Basic information' sheet recording the ring size and each
+            # die's placement so the file reopens exactly where it left off.
             export_rows = self.scene.pads_for_export(
                 renumber_by_position=self.renumber_checkbox.isChecked())
-            success, saved_path = exporter.export_by_die(export_rows, output_path)
+            metadata = self.scene.layout_metadata()
+            success, saved_path = exporter.export_by_die(export_rows, output_path,
+                                                         metadata)
             if not success:
                 QMessageBox.warning(self, "Export Failed", "Could not export the Excel file.")
                 return

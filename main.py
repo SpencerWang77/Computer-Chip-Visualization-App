@@ -106,8 +106,15 @@ class ChipVisApp(QMainWindow):
             print(f"Loaded {len(dies)} die(s) from {self.current_file}: "
                   f"{', '.join(d.name for d in dies)}")
 
-            # Pre-fill the pin count from the data; the user can override it.
-            self.upload_section.set_pin_count(self.excel_handler.suggest_pin_count())
+            # Pre-fill from a saved layout if present, else from the data.
+            saved_pins = self.excel_handler.get_saved_pins()
+            if saved_pins:
+                self.upload_section.set_pins(*saved_pins)
+            else:
+                self.upload_section.set_pin_count(self.excel_handler.suggest_pin_count())
+            saved_ring = self.excel_handler.get_saved_ring_size()
+            if saved_ring:
+                self.upload_section.set_ring_size(*saved_ring)
 
             self.progress_control.set_success_status()
             self.progress_control.enable_start_button()
@@ -123,7 +130,9 @@ class ChipVisApp(QMainWindow):
             self.progress_control.set_error_status("No dies found in the file")
             return
 
-        frame_params = self.upload_section.get_frame_parameters()
+        frame_params = self.upload_section.get_frame_parameters() or {}
+        # Restore each die's saved placement (position + angle), if any.
+        frame_params['placements'] = self.excel_handler.get_saved_placements()
 
         self.editor_page.set_data(dies, frame_params,
                                   source_file=self.current_file)

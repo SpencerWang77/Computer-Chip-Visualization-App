@@ -609,15 +609,14 @@ class ChipScene(QGraphicsScene):
 
     def _ring_size(self):
         """Outer (width, height) of the VSS ring. User values (rectangle) are
-        honored but never smaller than the arranged dies; otherwise a square
-        default large enough to move the dies around."""
+        honored exactly — width and height are fully independent — otherwise a
+        square default large enough to move the dies around."""
         params = self._frame_params or {}
         default = self._arranged_extent * RING_DEFAULT_FACTOR
         w = params.get('ring_w')
         h = params.get('ring_h')
         if w and w > 0 and h and h > 0:
-            return (max(float(w), self._arranged_w * 1.1),
-                    max(float(h), self._arranged_h * 1.1))
+            return float(w), float(h)
         return default, default
 
     def _pin_reference_rect(self, ring_w, ring_h):
